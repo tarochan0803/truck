@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>トラック挙動シミュレーション</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            display: flex;
+            flex-direction: row;
+        }
+        #controls {
+            width: 300px;
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            margin-right: 20px;
+            box-sizing: border-box;
+        }
+        #simulation {
+            flex-grow: 1;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            position: relative;
+        }
+        canvas {
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            cursor: crosshair;
+        }
+        button {
+            width: 100%;
+            margin-top: 10px;
+            padding: 10px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <h2>シミュレーション操作</h2>
+        <button id="startSimulation">シミュレーション開始</button>
+        <button id="resetSimulation">リセット</button>
+    </div>
+    <div id="simulation">
+        <canvas id="simulationCanvas" width="800" height="600"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('simulationCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let path = [];
+        let isSimulating = false;
+        let currentWaypointIndex = 0;
+
+        const truck = {
+            x: 0,
+            y: 0,
+            angle: 0,
+            speed: 2,
+            wheelBase: 50,
+            lookAheadDistance: 50
+        };
+
+        // パスの設定
+        canvas.addEventListener('click', (event) => {
+            if (isSimulating) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            path.push({ x, y });
+            drawPath();
+        });
+
+        // シミュレーション開始
+        document.getElementById('startSimulation').addEventListener('click', () => {
+            if (path.length < 2) {
+                alert('パスを2つ以上指定してください。');
+                return;
+            }
+            isSimulating = true;
+            currentWaypointIndex = 0;
+            truck.x = path[0].x;
+            truck.y = path[0].y;
+            truck.angle = Math.atan2(path[1].y - path[0].y, path[1].x - path[0].x);
+            animate();
+        });
+
+        // リセット
+        document.getElementById('resetSimulation').addEventListener('click', () => {
+            isSimulating = false;
+            path = [];
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        });
+
+        // 経路描画
+        function drawPath() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (path.length === 0) return;
+
+            ctx.beginPath();
+            ctx.moveTo(path[0].x, path[0].y);
+            for (let i = 1; i < path.length; i++) {
+                ctx.lineTo(path[i].x, path[i].y);
+            }
+            ctx.strokeStyle = 'blue';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            path.forEach((point) => {
+                ctx.beginPath();
+                ctx.arc(point.x, point.y, 5, 0, 2 * Math.PI);
+                ctx.fillStyle = 'red';
+                ctx.fill();
+            });
+        }
+
+        // トラックの描画
+        function drawTruck() {
+            const truckWidth = 20;
+            const truckLength = 40;
+            ctx.save();
+            ctx.translate(truck.x, truck.y);
+            ctx.rotate(truck.angle);
+            ctx.fillStyle = 'green';
+            ctx.fillRect(-truckLength / 2, -truckWidth / 2, truckLength, truckWidth);
+            ctx.restore();
+        }
+
+        // 距離計算
+        function distance(p1, p2) {
+            return Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        }
+
+        // トラック更新
+        function updateTruck() {
+            if (currentWaypointIndex >= path.length - 1) {
+                isSimulating = false;
+                return;
+            }
+
+            const target = path[currentWaypointIndex + 1];
+            const dx = target.x - truck.x;
+            const dy = target.y - truck.y;
+            const distToTarget = distance(truck, target);
+
+            if (distToTarget < truck.lookAheadDistance) {
+                currentWaypointIndex++;
+                if (currentWaypointIndex >= path.length - 1) {
+                    isSimulating = false;
+                    return;
+                }
+            }
+
+            const targetAngle = Math.atan2(dy, dx);
+            const angleDifference = Math.atan2(
+                Math.sin(targetAngle - truck.angle),
+                Math.cos(targetAngle - truck.angle)
+            );
+
+            const steeringAngle = Math.atan2(
+                2 * truck.wheelBase * Math.sin(angleDifference) / distToTarget,
+                1
+            );
+
+            truck.angle += steeringAngle;
+            truck.x += truck.speed * Math.cos(truck.angle);
+            truck.y += truck.speed * Math.sin(truck.angle);
+        }
+
+        // アニメーション
+        function animate() {
+            if (!isSimulating) return;
+            updateTruck();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawPath();
+            drawTruck();
+            requestAnimationFrame(animate);
+        }
+    </script>
+</body>
+</html>

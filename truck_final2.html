@@ -1,0 +1,165 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from matplotlib.widgets import Button, TextBox
+
+# 車両パラメータ(メートル)
+wheelBase = 4.0
+frontOverhang = 1.0
+rearOverhang = 1.0
+vehicleWidth = 2.5
+maxSteeringAngleDeg = 45
+maxSteeringAngle = np.radians(maxSteeringAngleDeg)
+initialSpeed = 5.0 # m/s
+
+# 道路(10m制働サンプル準)：直線から曲線へ
+# 実際にはユーザーが用意した道データをサンプリングして得る
+def create_path():
+    t = np.linspace(0,50,6) # 0,10,20,30,40,50 m
+    path_x = t
+    path_y = 0.5*np.sin(t/10) * 20 # ゆるやかなカーブ
+    return np.column_stack([path_x, path_y])
+
+path = create_path()
+
+# スタンレー制御などで利用
+def nearest_point_on_path(x,y,path):
+    # 最も近い点を探索 (單純最近部)
+    d = np.hypot(path[:,0]-x, path[:,1]-y)
+    idx = np.argmin(d)
+    return idx,d[idx]
+
+def heading_error(x,y,theta,path,idx):
+    # 目標点(idx)の接線方向計算
+    if idx<len(path)-1:
+        dx = path[idx+1,0]-path[idx,0]
+        dy = path[idx+1,1]-path[idx,1]
+    else:
+        dx = path[idx,0]-path[idx-1,0]
+        dy = path[idx,1]-path[idx-1,1]
+    path_theta = np.arctan2(dy,dx)
+    return np.arctan2(np.sin(path_theta - theta), np.cos(path_theta - theta))
+
+def lateral_error(x,y,theta,path,idx):
+    # パス点との横方向誤差
+    px,py = path[idx]
+    dx=px-x;dy=py-y
+    # 車両の進行方向thetaからみた横誤差
+    perp = dx*np.sin(theta)-dy*np.cos(theta)
+    return perp
+
+# スタンレー制御パラメータ
+k=1.0
+
+# シミュレーション設定
+dt=0.1
+x=path[0,0]
+y=path[0,1]
+if len(path)>1:
+    x2=path[1,0];y2=path[1,1]
+    theta=np.arctan2(y2-y,x2 - x)
+else:
+    theta=0.0
+
+v=initialSpeed
+steering=0.0
+
+history=[]
+cornerTraj = [[] for _ in range(4)] # コーナー軌跡
+
+def vehicleCorners(x,y,theta,wb,fo,ro,vw):
+    halfW=vw/2
+    totalL=fo+wb+ro
+    # 前輪基準
+    corners = [
+        [0,halfW],
+        [0,-halfW],
+        [-totalL,-halfW],
+        [-totalL,halfW]
+    ]
+    out=[]
+    for cx,cy in corners:
+        rx = cx*np.cos(theta)-cy*np.sin(theta)
+        ry = cx*np.sin(theta)+cy*np.cos(theta)
+        out.append([x+rx,y+ry])
+    return np.array(out)
+
+fig,ax=plt.subplots()
+ax.set_aspect('equal',adjustable='datalim')
+ax.plot(path[:,0],path[:,1],'--',color='gray',label='Road')
+veh_patch, = ax.plot([],[],'-k',lw=2)
+c1,=ax.plot([],[],'r',label='FrontLeft')
+c2,=ax.plot([],[],'g',label='FrontRight')
+c3,=ax.plot([],[],'b',label='RearRight')
+c4,=ax.plot([],[],'orange',label='RearLeft')
+point_scatter=ax.scatter([],[],c='blue')
+ax.legend()
+ax.set_xlim(path[:,0].min()-10,path[:,0].max()+10)
+ax.set_ylim(path[:,1].min()-10,path[:,1].max()+10)
+
+def update(frame):
+    global x,y,theta,v,steering
+    # Stanley control
+    idx,dist=nearest_point_on_path(x,y,path)
+    he = heading_error(x,y,theta,path,idx)
+    le = lateral_error(x,y,theta,path,idx)
+    # Stanleyステアリング = heading誤差 + arctan(k* lateral_err /速度)
+    if v<0.1: v=0.1
+    steering_angle = he + np.arctan2(k*le,v)
+    steering_angle = np.clip(steering_angle,-maxSteeringAngle,maxSteeringAngle)
+    steering = steering_angle
+
+    # 車体更新(自転車モデル)
+    angularVel=(v/wheelBase)*np.tan(steering)
+    theta += angularVel*dt
+    x+=v*dt*np.cos(theta)
+    y+=v*dt*np.sin(theta)
+
+    # 曲率で速度調整(任意)
+    if abs(angularVel)>0.1:
+        v=max(initialSpeed*0.5,v-0.5)
+    else:
+        v=min(initialSpeed,v+0.5)
+
+    # コーナー更新
+    corners=vehicleCorners(x,y,theta,wheelBase,frontOverhang,rearOverhang,vehicleWidth)
+    for i in range(4):
+        cornerTraj[i].append(corners[i])
+
+    veh_patch.set_data(np.append(corners[:,0],[corners[0,0]]), np.append(corners[:,1],[corners[0,1]]))
+    c1.set_data([pt[0] for pt in cornerTraj[0]],[pt[1] for pt in cornerTraj[0]])
+    c2.set_data([pt[0] for pt in cornerTraj[1]],[pt[1] for pt in cornerTraj[1]])
+    c3.set_data([pt[0] for pt in cornerTraj[2]],[pt[1] for pt in cornerTraj[2]])
+    c4.set_data([pt[0] for pt in cornerTraj[3]],[pt[1] for pt in cornerTraj[3]])
+    point_scatter.set_offsets([x,y])
+
+    # ステータス更新
+    document = None # このpython例ではブラウザDOMなし
+    # 必要ならコンソール出力等で代用
+    print(f"v={v:.2f}m/s, steering={np.degrees(steering):.2f}deg, theta={np.degrees(theta):.2f}deg")
+
+    return veh_patch,c1,c2,c3,c4,point_scatter
+
+# ボタンと入力エリア
+axbox = plt.axes([0.1, 0.01, 0.1, 0.05])
+button_start = Button(axbox, 'Start')
+
+axtext = plt.axes([0.3, 0.01, 0.3, 0.05])
+textbox_path = TextBox(axtext, 'Path Width', initial="2.5")
+
+# スタートボタン動作
+started = [False]
+
+def start_simulation(event):
+    global started, path
+    if not started[0]:
+        started[0] = True
+        try:
+            new_width = float(textbox_path.text)
+            print(f"Path Width set to {new_width} meters.")
+        except ValueError:
+            print("Invalid width input, using default value.")
+        ani = FuncAnimation(fig, update, frames=300, interval=100, blit=False)
+        plt.show()
+
+button_start.on_clicked(start_simulation)

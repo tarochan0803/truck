@@ -1,0 +1,1468 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>トラック搬入シミュレーション統合版</title>
+    <!-- 必要なスタイルシートとライブラリ -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+        header {
+            background-color: #333;
+            color: #fff;
+            padding: 10px;
+            text-align: center;
+        }
+        #main {
+            display: flex;
+            height: calc(100vh - 50px);
+        }
+        #sidebar {
+            width: 300px;
+            background-color: #f4f4f4;
+            overflow-y: auto;
+            padding: 15px;
+            box-sizing: border-box;
+        }
+        #content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        #map, #canvas-container {
+            flex: 1;
+            position: relative;
+        }
+        #simulationCanvas {
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+            background-color: #fff;
+        }
+        .control-group {
+            margin-bottom: 15px;
+        }
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .control-group input, .control-group button, .control-group select {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+        .control-group button {
+            cursor: pointer;
+            background-color: #333;
+            color: #fff;
+            border: none;
+        }
+        .control-group button:hover {
+            background-color: #555;
+        }
+        #selected-roads-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        #selected-roads-list li {
+            padding: 5px;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        #status p {
+            margin: 5px 0;
+        }
+        #modeButtons button {
+            width: 48%;
+            margin-right: 2%;
+            margin-bottom: 10px;
+            box-sizing: border-box;
+        }
+        #modeButtons button:last-child {
+            margin-right: 0;
+        }
+        @media (max-width: 768px) {
+            #main {
+                flex-direction: column;
+            }
+            #sidebar {
+                width: 100%;
+                height: 50vh;
+                overflow-y: auto;
+            }
+            #content {
+                height: 50vh;
+            }
+        }
+    </style>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+</head>
+<body>
+<header>
+    <h1>トラック搬入シミュレーション</h1>
+</header>
+<div id="main">
+    <div id="sidebar">
+        <div id="map-controls">
+            <h2>マップ操作</h2>
+            <div class="control-group">
+                <label for="search-input">目的地を検索</label>
+                <input type="text" id="search-input" placeholder="住所や場所を入力">
+                <button id="search-button">検索</button>
+            </div>
+            <div class="control-group">
+                <button id="refresh-data">データを更新</button>
+            </div>
+            <div class="control-group">
+                <button id="start-route-selection">経路選択モード開始</button>
+                <button id="confirm-route" disabled>経路決定</button>
+            </div>
+            <div id="selected-roads">
+                <h3>選択された道路</h3>
+                <ul id="selected-roads-list"></ul>
+            </div>
+        </div>
+        <div id="truck-controls" style="display:none;">
+            <h2>トラック設定</h2>
+            <div class="control-group">
+                <label for="wheelBase">ホイールベース (m)</label>
+                <input type="number" id="wheelBase" value="4.0" step="0.1" min="1">
+            </div>
+            <div class="control-group">
+                <label for="frontOverhang">前方オーバーハング (m)</label>
+                <input type="number" id="frontOverhang" value="1.0" step="0.1" min="0">
+            </div>
+            <div class="control-group">
+                <label for="rearOverhang">後方オーバーハング (m)</label>
+                <input type="number" id="rearOverhang" value="1.0" step="0.1" min="0">
+            </div>
+            <div class="control-group">
+                <label for="vehicleWidth">車体幅 (m)</label>
+                <input type="number" id="vehicleWidth" value="2.5" step="0.1" min="1">
+            </div>
+            <div class="control-group">
+                <label for="maxSteeringAngle">最大ステアリング角度 (度)</label>
+                <input type="number" id="maxSteeringAngle" value="45" step="1" min="1" max="60">
+            </div>
+            <div class="control-group">
+                <label for="vehicleSpeed">初期車速 (m/s)</label>
+                <input type="number" id="vehicleSpeed" value="5" step="0.1" min="1">
+            </div>
+            <div class="control-group" id="modeButtons">
+                <button id="drawModeButton">パス入力モード</button>
+                <button id="panModeButton">パンモード</button>
+            </div>
+            <div class="control-group">
+                <label for="zoomSlider">ズームレベル</label>
+                <input type="range" id="zoomSlider" min="0.5" max="3" step="0.1" value="1">
+            </div>
+            <div class="control-group">
+                <button id="adjustScalePosition">縮尺・位置を合わせる</button>
+            </div>
+            <div class="control-group">
+                <button id="startSimulation">シミュレーション開始</button>
+                <button id="pauseSimulation">一時停止</button>
+                <button id="resetSimulation">リセット</button>
+                <button id="clearPath">パスをクリア</button>
+            </div>
+            <div id="status">
+                <p>速度: <span id="currentSpeed">0</span> m/s</p>
+                <p>ステアリング角度: <span id="currentSteeringAngle">0</span> 度</p>
+                <p>向き: <span id="currentTheta">0</span> 度</p>
+            </div>
+            <div class="control-group">
+                <button id="backToMapButton">マップに戻る</button>
+            </div>
+        </div>
+    </div>
+    <div id="content">
+        <div id="map"></div>
+        <div id="canvas-container" style="display:none;">
+            <canvas id="simulationCanvas"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+
+// ここでcreateGeoJsonControlsを先に定義しておく
+function createGeoJsonControls(){
+    const container=document.getElementById('truck-controls');
+    const existingControls=container.querySelectorAll('.geojson-controls');
+    existingControls.forEach(ctrl=>ctrl.remove());
+
+    geoJsonDataSets.forEach((dataset,datasetIndex)=>{
+        const geoJsonControl=document.createElement('div');
+        geoJsonControl.classList.add('geojson-controls');
+
+        const title=document.createElement('h3');
+        title.innerText=dataset.name;
+        geoJsonControl.appendChild(title);
+
+        dataset.data.features.forEach((feature,featureIndex)=>{
+            const roadControl=document.createElement('div');
+            roadControl.className='road-controls';
+
+            const label=document.createElement('label');
+            label.innerText=`${feature.properties.name||'未命名の道路'} (幅: m): `;
+            label.setAttribute('for',`roadWidthInput-${datasetIndex}-${featureIndex}`);
+
+            const input=document.createElement('input');
+            input.type='number';
+            input.id=`roadWidthInput-${datasetIndex}-${featureIndex}`;
+            input.value=feature.properties.width;
+            input.min=1;
+            input.step=1;
+
+            const button=document.createElement('button');
+            button.innerText=`幅を設定`;
+            button.onclick=()=>{
+                const newWidth=parseFloat(input.value);
+                if(newWidth>0){
+                    feature.properties.width=newWidth;
+                    drawRoads();
+                } else {
+                    alert('幅は正の数でなければなりません。');
+                }
+            };
+
+            roadControl.appendChild(label);
+            roadControl.appendChild(input);
+            roadControl.appendChild(button);
+            geoJsonControl.appendChild(roadControl);
+        });
+
+        container.insertBefore(geoJsonControl,container.firstChild);
+    });
+}
+
+var map;
+var roadData = null;
+var roadLayers = [];
+var selectedRoads = []; 
+var isSelectingRoute = false;
+
+const canvas = document.getElementById('simulationCanvas');
+const ctx = canvas.getContext('2d');
+let geoJsonDataSets = [];
+let simulation = null;
+let path = [];
+
+let scale = 1;
+let offsetX = 0;
+let offsetY = 0;
+let isDragging = false;
+let dragStart = { x: 0, y: 0 };
+let canvasMode = 'draw';
+let adjustedMetersPerPixel = 1;
+
+function setupCanvasEvents() {
+    canvas.addEventListener('click', (event) => {
+        if (canvasMode === 'draw' && (simulation === null || !simulation.running)) {
+            const rect = canvas.getBoundingClientRect();
+            const x = (event.clientX - rect.left - offsetX) / scale;
+            const y = (event.clientY - rect.top - offsetY) / scale;
+            path.push({ x: x, y: y });
+            drawRoads();
+        }
+    });
+
+    canvas.addEventListener('mousedown', (event) => {
+        if (canvasMode === 'pan') {
+            isDragging = true;
+            dragStart.x = event.clientX - offsetX;
+            dragStart.y = event.clientY - offsetY;
+            canvas.style.cursor = 'grabbing';
+        }
+    });
+
+    canvas.addEventListener('mousemove', (event) => {
+        if (isDragging) {
+            offsetX = event.clientX - dragStart.x;
+            offsetY = event.clientY - dragStart.y;
+            drawRoads();
+        }
+    });
+
+    canvas.addEventListener('mouseup', () => {
+        isDragging = false;
+        if (canvasMode === 'pan') {
+            canvas.style.cursor = 'grab';
+        }
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+        isDragging = false;
+        if (canvasMode === 'pan') {
+            canvas.style.cursor = 'grab';
+        }
+    });
+}
+
+function init() {
+    map = L.map('map',{
+        center:[35.681236,139.767125],
+        zoom:16,
+        maxZoom:22
+    });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+        attribution:'&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    fetchRoadData();
+
+    document.getElementById('search-button').addEventListener('click', searchLocation);
+    document.getElementById('refresh-data').addEventListener('click', fetchRoadData);
+    document.getElementById('start-route-selection').addEventListener('click', startRouteSelection);
+    document.getElementById('confirm-route').addEventListener('click', confirmRoute);
+
+    setupCanvasEvents();
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    document.getElementById('startSimulation').addEventListener('click', startTruckSimulation);
+    document.getElementById('pauseSimulation').addEventListener('click', pauseTruckSimulation);
+    document.getElementById('resetSimulation').addEventListener('click', resetTruckSimulation);
+    document.getElementById('clearPath').addEventListener('click', clearPath);
+    document.getElementById('backToMapButton').addEventListener('click', backToMap);
+
+    document.getElementById('drawModeButton').addEventListener('click', ()=>{
+        canvasMode='draw';
+        canvas.style.cursor='crosshair';
+    });
+    document.getElementById('panModeButton').addEventListener('click', ()=>{
+        canvasMode='pan';
+        canvas.style.cursor='grab';
+    });
+
+    document.getElementById('zoomSlider').addEventListener('input',(event)=>{
+        scale=parseFloat(event.target.value);
+        drawRoads();
+    });
+
+    document.getElementById('adjustScalePosition').addEventListener('click', adjustScaleAndPosition);
+}
+
+function resizeCanvas(){
+    canvas.width=canvas.clientWidth;
+    canvas.height=canvas.clientHeight;
+    drawRoads();
+}
+
+function fetchRoadData(){
+    let bounds=map.getBounds();
+    let overpassUrl='https://overpass-api.de/api/interpreter';
+    let query=`
+    [out:json];
+    (
+        way["highway"]
+        (${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});
+    );
+    out tags geom;
+    `;
+
+    roadLayers.forEach(l=>map.removeLayer(l));
+    roadLayers=[];
+    selectedRoads=[];
+    isSelectingRoute=false;
+    document.getElementById('confirm-route').disabled=true;
+    updateSelectedRoadsList();
+
+    fetch(overpassUrl,{method:'POST',body:query})
+    .then(r=>r.json())
+    .then(d=>{
+        roadData=d;
+        d.elements.forEach(e=>{
+            if(e.type==='way'&&e.geometry){
+                var coordinates=e.geometry.map(c=>[c.lon,c.lat]);
+                var lineString=turf.lineString(coordinates,e.tags);
+                var chunked=turf.lineChunk(lineString,10,{units:'meters'});
+                chunked.features.forEach(chunk=>{
+                    let chunkCoordsForMap=chunk.geometry.coordinates.map(coord=>[coord[1],coord[0]]);
+                    let poly=L.polyline(chunkCoordsForMap,{color:'blue',weight:5}).addTo(map);
+                    poly.element={
+                        tags:e.tags,
+                        geometry:chunk.geometry.coordinates
+                    };
+                    poly.originalStyle={color:'blue',weight:5};
+                    poly.on('click',()=>{
+                        if(isSelectingRoute)toggleRoadSelection(poly);
+                    });
+                    roadLayers.push(poly);
+                });
+            }
+        });
+    })
+    .catch(err=>console.error(err));
+}
+
+function toggleRoadSelection(poly){
+    let i=selectedRoads.indexOf(poly);
+    if(i===-1){
+        selectedRoads.push(poly);
+        poly.setStyle({color:'orange'});
+    } else {
+        selectedRoads.splice(i,1);
+        poly.setStyle(poly.originalStyle);
+    }
+    updateSelectedRoadsList();
+    document.getElementById('confirm-route').disabled=(selectedRoads.length===0);
+}
+
+function updateSelectedRoadsList(){
+    var list=document.getElementById('selected-roads-list');
+    list.innerHTML='';
+
+    selectedRoads.forEach(function(polyline, idx) {
+        var li = document.createElement('li');
+
+        var nameSpan = document.createElement('span');
+        nameSpan.className = 'road-name';
+        nameSpan.textContent = polyline.element.tags.name || `道路 ${idx + 1}`;
+        li.appendChild(nameSpan);
+
+        var actionsDiv = document.createElement('div');
+        actionsDiv.className = 'road-actions';
+
+        var upButton = document.createElement('button');
+        upButton.textContent = '↑';
+        upButton.title = '順序を上に移動';
+        upButton.onclick = function() { moveRoadUp(idx); };
+        actionsDiv.appendChild(upButton);
+
+        var downButton = document.createElement('button');
+        downButton.textContent = '↓';
+        downButton.title = '順序を下に移動';
+        downButton.onclick = function() { moveRoadDown(idx); };
+        actionsDiv.appendChild(downButton);
+
+        var removeButton = document.createElement('button');
+        removeButton.textContent = '×';
+        removeButton.title = '選択解除';
+        removeButton.onclick = function() { toggleRoadSelection(polyline); };
+        actionsDiv.appendChild(removeButton);
+
+        li.appendChild(actionsDiv);
+
+        var editForm = document.createElement('div');
+        editForm.className = 'edit-width-form';
+
+        var widthInput = document.createElement('input');
+        widthInput.type = 'number';
+        widthInput.min = '1';
+        widthInput.step = '0.1';
+        widthInput.value = getRoadWidth(polyline);
+        widthInput.placeholder = '道幅 (m)';
+        editForm.appendChild(widthInput);
+
+        var saveButton = document.createElement('button');
+        saveButton.textContent = '保存';
+        saveButton.onclick = function() { updateRoadWidth(polyline, widthInput.value); };
+        editForm.appendChild(saveButton);
+
+        li.appendChild(editForm);
+
+        list.appendChild(li);
+    });
+}
+
+function moveRoadUp(index){
+    if(index===0)return;
+    var temp=selectedRoads[index-1];
+    selectedRoads[index-1]=selectedRoads[index];
+    selectedRoads[index]=temp;
+    updateSelectedRoadsList();
+}
+
+function moveRoadDown(index){
+    if(index===selectedRoads.length-1)return;
+    var temp=selectedRoads[index+1];
+    selectedRoads[index+1]=selectedRoads[index];
+    selectedRoads[index]=temp;
+    updateSelectedRoadsList();
+}
+
+function getRoadWidth(polyline){
+    if(polyline.element.tags && polyline.element.tags.width){
+        var widthStr=polyline.element.tags.width;
+        var width=parseFloat(widthStr);
+        if(!isNaN(width))return width;
+    }
+    var highwayType=polyline.element.tags&&polyline.element.tags.highway?polyline.element.tags.highway:'unknown';
+    var widthEstimate={
+        'motorway':25,'trunk':20,'primary':15,'secondary':12,'tertiary':10,
+        'unclassified':8,'residential':6,'service':4,'footway':2,'path':1,'unknown':5
+    };
+    return widthEstimate[highwayType]||5;
+}
+
+function updateRoadWidth(polyline,newWidth){
+    var width=parseFloat(newWidth);
+    if(isNaN(width)||width<=0){
+        alert('有効な道幅を入力してください。');
+        return;
+    }
+
+    polyline.setStyle({weight:width});
+    polyline.element.tags.width=width.toString();
+    alert(`道路の道幅を ${width}m に更新しました。`);
+}
+
+function searchLocation(){
+    var q=document.getElementById('search-input').value;
+    if(q){
+        fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`)
+        .then(r=>r.json())
+        .then(d=>{
+            if(d&&d.length>0){
+                var lat=parseFloat(d[0].lat);
+                var lon=parseFloat(d[0].lon);
+                map.setView([lat,lon],16);
+                L.marker([lat,lon]).addTo(map).bindPopup(d[0].display_name).openPopup();
+            } else {
+                alert('場所が見つかりませんでした。');
+            }
+        })
+        .catch(e=>console.error(e));
+    }
+}
+
+function startRouteSelection(){
+    isSelectingRoute=true;
+    alert('経路として進みたい道路をクリック。終了は「経路決定」ボタン。');
+    document.getElementById('confirm-route').disabled=(selectedRoads.length===0);
+}
+
+function calculateCenterPoint(){
+    var allCoordinates=[];
+    selectedRoads.forEach(function(polyline){
+        polyline.element.geometry.forEach(function(coord){
+            allCoordinates.push(coord);
+        });
+    });
+
+    var centroid=turf.centroid(turf.featureCollection(allCoordinates.map(coord=>turf.point(coord))));
+    return centroid.geometry.coordinates;
+}
+
+function confirmRoute(){
+    if(selectedRoads.length===0){
+        alert('経路が選択されていません。');
+        return;
+    }
+
+    var centerPoint=calculateCenterPoint();
+    var buffer=turf.circle(centerPoint,50,{units:'meters',steps:64});
+
+    var geojsonFeatures=[];
+    selectedRoads.forEach(function(polyline){
+        var coordinates=polyline.element.geometry; 
+        var lineString=turf.lineString(coordinates,{
+            "highway":polyline.element.tags.highway||'',
+            "name":polyline.element.tags.name||'',
+            "width":getRoadWidth(polyline)||5
+        });
+        if(turf.booleanIntersects(lineString,buffer)){
+            geojsonFeatures.push(lineString);
+        }
+    });
+
+    if(geojsonFeatures.length===0){
+        alert('選択された範囲内に道路がありません。');
+        return;
+    }
+
+    var geojsonData={
+        "type":"FeatureCollection",
+        "features":geojsonFeatures
+    };
+
+    geoJsonDataSets=[{
+        id:1,
+        name:"選択された経路",
+        data:geojsonData
+    }];
+
+    // createGeoJsonControls呼び出しはここで有効
+    createGeoJsonControls();
+
+    document.getElementById('map').style.display='none';
+    document.getElementById('map-controls').style.display='none';
+    document.getElementById('canvas-container').style.display='block';
+    document.getElementById('truck-controls').style.display='block';
+
+    resizeCanvas();
+
+    path=[];
+    isSelectingRoute=false;
+
+    let bounds=getGeoJsonBounds();
+    const cw=canvas.width,ch=canvas.height;
+    let scaleX=cw/bounds.widthMeters;
+    let scaleY=ch/bounds.heightMeters;
+    scale=Math.min(scaleX,scaleY)*0.8; 
+    offsetX=cw/2;
+    offsetY=ch/2;
+    let metersPerPixel=1/scale;
+    adjustedMetersPerPixel=metersPerPixel;
+
+    document.getElementById('zoomSlider').value=1;
+
+    // 自動パス生成
+    let autoPath=[];
+    geoJsonDataSets.forEach(dataset=>{
+        dataset.data.features.forEach(feature=>{
+            if(feature.geometry.type==='LineString'){
+                const coords=feature.geometry.coordinates;
+                for(let i=0;i<coords.length;i++){
+                    let p=latLngToCanvasPoint(coords[i][1],coords[i][0],bounds);
+                    autoPath.push({x:p.x - offsetX,y:p.y - offsetY});
+                }
+            } else if(feature.geometry.type==='MultiLineString'){
+                feature.geometry.coordinates.forEach(line=>{
+                    for(let i=0;i<line.length;i++){
+                        let c=line[i];
+                        let p=latLngToCanvasPoint(c[1],c[0],bounds);
+                        autoPath.push({x:p.x - offsetX,y:p.y - offsetY});
+                    }
+                });
+            }
+        });
+    });
+
+    if(autoPath.length>1){
+        path=autoPath;
+    }
+
+    drawRoads();
+}
+
+function resetSelection(){
+    selectedRoads.forEach(p=>p.setStyle(p.originalStyle));
+    selectedRoads=[];
+    updateSelectedRoadsList();
+    document.getElementById('confirm-route').disabled=true;
+    isSelectingRoute=false;
+}
+
+function backToMap(){
+    document.getElementById('truck-controls').style.display='none';
+    document.getElementById('map').style.display='block';
+    document.getElementById('map-controls').style.display='block';
+    document.getElementById('canvas-container').style.display='none';
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    resetSelection();
+    path=[];
+    simulation=null;
+}
+
+function startTruckSimulation(){
+    const wheelBase=parseFloat(document.getElementById('wheelBase').value);
+    const frontOverhang=parseFloat(document.getElementById('frontOverhang').value);
+    const rearOverhang=parseFloat(document.getElementById('rearOverhang').value);
+    const vehicleWidth=parseFloat(document.getElementById('vehicleWidth').value);
+    const maxSteeringAngle=parseFloat(document.getElementById('maxSteeringAngle').value);
+    const vehicleSpeed=parseFloat(document.getElementById('vehicleSpeed').value);
+
+    if(isNaN(wheelBase)||isNaN(frontOverhang)||isNaN(rearOverhang)||isNaN(vehicleWidth)||isNaN(maxSteeringAngle)||isNaN(vehicleSpeed)){
+        alert('すべて有効な数値を入力してください。');
+        return;
+    }
+
+    if(path.length<2){
+        alert('シミュレーションには最低2点のパスが必要です。');
+        return;
+    }
+
+    let bounds=getGeoJsonBounds();
+    const pathInMeters=path.map(p=>({x:p.x*adjustedMetersPerPixel,y:p.y*adjustedMetersPerPixel}));
+
+    if(simulation) simulation.stop();
+    const config={
+        wheelBase:wheelBase,
+        frontOverhang:frontOverhang,
+        rearOverhang:rearOverhang,
+        vehicleWidth:vehicleWidth,
+        maxSteeringAngle:maxSteeringAngle,
+        vehicleSpeed:vehicleSpeed
+    };
+    simulation=new TruckSimulation(canvas,config,pathInMeters,adjustedMetersPerPixel);
+    simulation.start();
+}
+
+function pauseTruckSimulation(){
+    if(simulation) simulation.pause();
+}
+
+function resetTruckSimulation(){
+    if(simulation){
+        simulation.stop();
+        simulation=null;
+    }
+    drawRoads();
+    document.getElementById('currentSpeed').textContent='0';
+    document.getElementById('currentSteeringAngle').textContent='0';
+    document.getElementById('currentTheta').textContent='0';
+}
+
+function clearPath(){
+    path=[];
+    if(simulation){
+        simulation.stop();
+        simulation=null;
+    }
+    drawRoads();
+    document.getElementById('currentSpeed').textContent='0';
+    document.getElementById('currentSteeringAngle').textContent='0';
+    document.getElementById('currentTheta').textContent='0';
+}
+
+function adjustScaleAndPosition(){
+    updateAdjustedMetersPerPixel();
+    if(simulation){
+        const pathInMeters=path.map(point=>{
+            return {
+                x:(point.x)*adjustedMetersPerPixel,
+                y:(point.y)*adjustedMetersPerPixel
+            };
+        });
+        simulation.updatePathAndScale(pathInMeters,adjustedMetersPerPixel);
+        drawRoads();
+    }
+}
+
+function drawRoads(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.save();
+    ctx.translate(offsetX,offsetY);
+    ctx.scale(scale,scale);
+
+    const bounds=getGeoJsonBounds();
+    const metersPerPixelX = bounds.widthMeters / canvas.width;
+    const metersPerPixelY = bounds.heightMeters / canvas.height;
+    const metersPerPixel=(metersPerPixelX+metersPerPixelY)/2;
+
+    geoJsonDataSets.forEach(dataset=>{
+        dataset.data.features.forEach(feature=>{
+            const roadWidthMeters=feature.properties.width||5;
+            const pixelWidth=roadWidthMeters/(adjustedMetersPerPixel);
+            ctx.lineWidth=pixelWidth;
+            ctx.strokeStyle='gray';
+
+            if(feature.geometry.type==='LineString'){
+                const coords=feature.geometry.coordinates;
+                if(coords.length<2)return;
+                ctx.beginPath();
+                let start=latLngToCanvasPoint(coords[0][1],coords[0][0],bounds);
+                ctx.moveTo(start.x,start.y);
+                for(let i=1;i<coords.length;i++){
+                    let p=latLngToCanvasPoint(coords[i][1],coords[i][0],bounds);
+                    ctx.lineTo(p.x,p.y);
+                }
+                ctx.stroke();
+            } else if(feature.geometry.type==='MultiLineString'){
+                feature.geometry.coordinates.forEach(line=>{
+                    if(line.length<2)return;
+                    ctx.beginPath();
+                    let start=latLngToCanvasPoint(line[0][1],line[0][0],bounds);
+                    ctx.moveTo(start.x,start.y);
+                    for(let i=1;i<line.length;i++){
+                        let p=latLngToCanvasPoint(line[i][1],line[i][0],bounds);
+                        ctx.lineTo(p.x,p.y);
+                    }
+                    ctx.stroke();
+                });
+            }
+        });
+    });
+
+    if(path.length>1){
+        ctx.strokeStyle='red';
+        ctx.lineWidth=2;
+        ctx.beginPath();
+        ctx.moveTo(path[0].x,path[0].y);
+        for(let i=1;i<path.length;i++){
+            ctx.lineTo(path[i].x,path[i].y);
+        }
+        ctx.stroke();
+        for(let p of path){
+            ctx.fillStyle='blue';
+            ctx.beginPath();
+            ctx.arc(p.x,p.y,3,0,2*Math.PI);
+            ctx.fill();
+        }
+    }
+
+    if(simulation) simulation.draw();
+
+    ctx.restore();
+}
+
+function latLngToCanvasPoint(lat,lng,bounds){
+    const xFraction=(lng - bounds.minLng)/(bounds.maxLng-bounds.minLng);
+    const yFraction=(lat - bounds.minLat)/(bounds.maxLat - bounds.minLat);
+    const x=xFraction*canvas.width;
+    const y=(1 - yFraction)*canvas.height;
+    return {x:x,y:y};
+}
+
+function getGeoJsonBounds(){
+    let minLat=Infinity,maxLat=-Infinity,minLng=Infinity,maxLng=-Infinity;
+    geoJsonDataSets.forEach(dataset=>{
+        dataset.data.features.forEach(feature=>{
+            if(feature.geometry.type==='LineString'){
+                feature.geometry.coordinates.forEach(coord=>{
+                    const lng=coord[0],lat=coord[1];
+                    if(lat<minLat)minLat=lat;
+                    if(lat>maxLat)maxLat=lat;
+                    if(lng<minLng)minLng=lng;
+                    if(lng>maxLng)maxLng=lng;
+                });
+            } else if(feature.geometry.type==='MultiLineString'){
+                feature.geometry.coordinates.forEach(line=>{
+                    line.forEach(coord=>{
+                        const lng=coord[0],lat=coord[1];
+                        if(lat<minLat)minLat=lat;
+                        if(lat>maxLat)maxLat=lat;
+                        if(lng<minLng)minLng=lng;
+                        if(lng>maxLng)maxLng=lng;
+                    });
+                });
+            }
+        });
+    });
+    if(minLat===Infinity||maxLat===-Infinity||minLng===Infinity||maxLng===-Infinity){
+        return {minLat:0,maxLat:0,minLng:0,maxLng:0,widthMeters:10,heightMeters:10};
+    }
+    const bottomLeft=[minLng,minLat];
+    const bottomRight=[maxLng,minLat];
+    const topLeft=[minLng,maxLat];
+
+    const widthMeters=turf.distance(bottomLeft,bottomRight,{units:'meters'});
+    const heightMeters=turf.distance(bottomLeft,topLeft,{units:'meters'});
+    return {minLat,maxLat,minLng,maxLng,widthMeters,heightMeters};
+}
+
+class TruckSimulation {
+    constructor(canvas, config, pathInMeters, metersPerPixel) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+        this.config = config;
+        this.metersPerPixel = metersPerPixel;
+        this.path = this.computeMidpoints(pathInMeters);
+        this.lookaheadDistance = 5;
+        this.reset();
+
+        this.previousError=0;this.integral=0;this.kp=2.0;this.ki=0.0;this.kd=0.5;
+    }
+
+    computeMidpoints(path) {
+        let midpoints=[];
+        for(let i=0;i<path.length-1;i++){
+            let mx=(path[i].x+path[i+1].x)/2;
+            let my=(path[i].y+path[i+1].y)/2;
+            midpoints.push({x:mx,y:my});
+        }
+        let newPath=[];
+        for(let i=0;i<path.length-1;i++){
+            newPath.push(path[i]);
+            newPath.push(midpoints[i]);
+        }
+        newPath.push(path[path.length-1]);
+        return newPath;
+    }
+
+    reset() {
+        this.currentTargetIndex=0;
+        this.history=[];
+        this.cornerTrajectories=[[],[],[],[]];
+        this.running=false;
+        const mp=this.metersPerPixel;
+        this.wheelBase=this.config.wheelBase/mp;
+        this.frontOverhang=this.config.frontOverhang/mp;
+        this.rearOverhang=this.config.rearOverhang/mp;
+        this.vehicleWidth=this.config.vehicleWidth/mp;
+        this.maxSteeringAngle=this.degToRad(this.config.maxSteeringAngle);
+        this.initialVelocity=this.config.vehicleSpeed/mp;
+        this.velocity=this.initialVelocity;
+
+        this.x=this.path[0].x;this.y=this.path[0].y;
+        if(this.path.length>1){
+            this.theta=Math.atan2(this.path[1].y - this.path[0].y,this.path[1].x - this.path[0].x);
+        } else {
+            this.theta=0;
+        }
+        this.steeringAngle=0;
+        this.timeStep=0.1;
+        this.updateVehicleState();
+        this.updateStatusDisplay();
+    }
+
+    updatePathAndScale(newPathInMeters,newMetersPerPixel){
+        this.path=this.computeMidpoints(newPathInMeters);
+        this.metersPerPixel=newMetersPerPixel;
+        this.lookaheadDistance=5;
+    }
+
+    start(){
+        if(this.path.length<2){alert('シミュレーションには最低2点のパスが必要です。');return;}
+        this.running=true;
+        this.animate();
+    }
+
+    pause(){
+        this.running=false;if(this.animationFrame)cancelAnimationFrame(this.animationFrame);
+    }
+
+    stop(){
+        this.running=false;if(this.animationFrame)cancelAnimationFrame(this.animationFrame);
+    }
+
+    animate(){
+        if(!this.running)return;
+        this.simulateStep();
+        drawRoads();
+        this.animationFrame=requestAnimationFrame(()=>this.animate());
+    }
+
+    simulateStep(){
+        const targetPoint=this.findLookaheadTarget();
+        if(!targetPoint){this.stop();return;}
+        const dx=targetPoint.x - this.x;
+        const dy=targetPoint.y - this.y;
+        const distToTarget=Math.hypot(dx,dy);
+        if(distToTarget<this.velocity*this.timeStep)return;
+
+        const targetTheta=Math.atan2(dy,dx);
+        let angleDiff=this.normalizeAngle(targetTheta - this.theta);
+        this.integral+=angleDiff*this.timeStep;
+        let derivative=(angleDiff - this.previousError)/this.timeStep;
+        let steeringAdj=this.kp*angleDiff+this.ki*this.integral+this.kd*derivative;
+        this.previousError=angleDiff;
+        if(steeringAdj>this.maxSteeringAngle)steeringAdj=this.maxSteeringAngle;
+        else if(steeringAdj<-this.maxSteeringAngle)steeringAdj=-this.maxSteeringAngle;
+        this.steeringAngle=steeringAdj;
+
+        const angularVel=(this.velocity/this.wheelBase)*Math.tan(this.steeringAngle);
+        this.theta+=angularVel*this.timeStep;
+        this.x+=this.velocity*this.timeStep*Math.cos(this.theta);
+        this.y+=this.velocity*this.timeStep*Math.sin(this.theta);
+
+        const curvature=Math.abs(angularVel);
+        if(curvature>0.1)this.velocity=Math.max(this.initialVelocity*0.5,this.velocity-0.5);
+        else this.velocity=Math.min(this.initialVelocity,this.velocity+0.5);
+
+        this.updateVehicleState();
+        this.updateStatusDisplay();
+    }
+
+    findLookaheadTarget(){
+        const L=this.lookaheadDistance; 
+        let closest=null;let minDist=Infinity;
+        for(let i=0;i<this.path.length-1;i++){
+            const p1=this.path[i],p2=this.path[i+1];
+            let inter=this.getCircleLineIntersection(this.x,this.y,L,p1,p2);
+            if(inter){
+                for(let pt of inter){
+                    let d=Math.hypot(pt.x-this.x,pt.y-this.y);
+                    if(d<minDist&&this.isPointAhead(pt)){
+                        minDist=d;closest=pt;
+                    }
+                }
+            }
+        }
+        return closest;
+    }
+
+    getCircleLineIntersection(cx,cy,r,p1,p2){
+        const dx=p2.x-p1.x;const dy=p2.y-p1.y;
+        const a=dx*dx+dy*dy;
+        const b=2*(dx*(p1.x-cx)+dy*(p1.y-cy));
+        const c=(p1.x-cx)*(p1.x-cx)+(p1.y-cy)*(p1.y-cy)-r*r;
+        const disc=b*b-4*a*c;
+
+        if(disc<0)return null;
+
+        const sqrtD=Math.sqrt(disc);
+        const t1=(-b+sqrtD)/(2*a);
+        const t2=(-b - sqrtD)/(2*a);
+        let intersections=[];
+        if(t1>=0&&t1<=1)intersections.push({x:p1.x+t1*dx,y:p1.y+t1*dy});
+        if(t2>=0&&t2<=1)intersections.push({x:p1.x+t2*dx,y:p1.y+t2*dy});
+        return intersections.length>0?intersections:null;
+    }
+
+    isPointAhead(pt){
+        const dx=pt.x-this.x;const dy=pt.y-this.y;
+        const dot=dx*Math.cos(this.theta)+dy*Math.sin(this.theta);
+        return dot>0;
+    }
+
+    updateVehicleState(){
+        const wb=this.wheelBase,fo=this.frontOverhang,ro=this.rearOverhang,vw=this.vehicleWidth;
+        const halfW=vw/2;const totalL=fo+wb+ro;
+        const ref={x:this.x,y:this.y,theta:this.theta};
+        const corners=[
+            {x:0,y:halfW},{x:0,y:-halfW},{x:-totalL,y:-halfW},{x:-totalL,y:halfW}
+        ];
+        for(let i=0;i<corners.length;i++){
+            let lx=corners[i].x,ly=corners[i].y;
+            let rx=lx*Math.cos(ref.theta)-ly*Math.sin(ref.theta);
+            let ry=lx*Math.sin(ref.theta)+ly*Math.cos(ref.theta);
+            let wx=ref.x+rx,wy=ref.y+ry;
+            this.cornerTrajectories[i].push({x:wx,y:wy});
+        }
+        this.history.push({x:this.x,y:this.y,theta:this.theta});
+    }
+
+    degToRad(d){return d*Math.PI/180;}
+    radToDeg(r){return r*180/Math.PI;}
+    normalizeAngle(a){
+        while(a>Math.PI)a-=2*Math.PI;
+        while(a<-Math.PI)a+=2*Math.PI;
+        return a;
+    }
+
+    updateStatusDisplay(){
+        const mps=this.velocity*this.metersPerPixel;
+        document.getElementById('currentSpeed').textContent=mps.toFixed(2);
+        document.getElementById('currentSteeringAngle').textContent=this.radToDeg(this.steeringAngle).toFixed(2);
+        document.getElementById('currentTheta').textContent=this.radToDeg(this.theta).toFixed(2);
+    }
+
+    draw(){
+        this.ctx.save();
+        this.ctx.translate(offsetX,offsetY);
+        this.ctx.scale(scale,scale);
+
+        const colors=['red','green','blue','orange'];
+        for(let i=0;i<this.cornerTrajectories.length;i++){
+            const traj=this.cornerTrajectories[i];
+            if(traj.length<2)continue;
+            this.ctx.strokeStyle=colors[i];
+            this.ctx.lineWidth=1;
+            this.ctx.beginPath();
+            let mp=this.metersPerPixel;
+            this.ctx.moveTo(traj[0].x/mp,traj[0].y/mp);
+            for(let j=1;j<traj.length;j++){
+                this.ctx.lineTo(traj[j].x/mp,traj[j].y/mp);
+            }
+            this.ctx.stroke();
+        }
+
+        const record=this.history[this.history.length-1];
+        if(record){
+            const wb=this.wheelBase,fo=this.frontOverhang,ro=this.rearOverhang,vw=this.vehicleWidth;
+            const halfW=vw/2;const totalL=fo+wb+ro;
+            const ref={x:record.x,y:record.y,theta:record.theta};
+            const corners=[
+                {x:0,y:halfW},{x:0,y:-halfW},{x:-totalL,y:-halfW},{x:-totalL,y:halfW}
+            ];
+            let mp=this.metersPerPixel;
+            this.ctx.strokeStyle='black';
+            this.ctx.lineWidth=3;
+            this.ctx.beginPath();
+            let first=true;
+            for(let c of corners){
+                let lx=c.x,ly=c.y;
+                let rx=lx*Math.cos(ref.theta)-ly*Math.sin(ref.theta);
+                let ry=lx*Math.sin(ref.theta)+ly*Math.cos(ref.theta);
+                let wx=ref.x+rx,wy=ref.y+ry;
+                if(first){this.ctx.moveTo(wx/mp,wy/mp);first=false;}else this.ctx.lineTo(wx/mp,wy/mp);
+            }
+            this.ctx.closePath();
+            this.ctx.stroke();
+        }
+
+        this.ctx.restore();
+    }
+}
+
+function updateAdjustedMetersPerPixel(){
+    const bounds=getGeoJsonBounds();
+    const canvasWidth=canvas.width;
+    const canvasHeight=canvas.height;
+    const metersPerPixelX=bounds.widthMeters/canvasWidth;
+    const metersPerPixelY=bounds.heightMeters/canvasHeight;
+    const metersPerPixel=(metersPerPixelX+metersPerPixelY)/2;
+    adjustedMetersPerPixel=metersPerPixel/scale;
+}
+
+function adjustScaleAndPosition(){
+    updateAdjustedMetersPerPixel();
+    if(simulation){
+        const pathInMeters=path.map(point=>{
+            return {
+                x:(point.x)*adjustedMetersPerPixel,
+                y:(point.y)*adjustedMetersPerPixel
+            };
+        });
+        simulation.updatePathAndScale(pathInMeters,adjustedMetersPerPixel);
+        drawRoads();
+    }
+}
+
+function drawRoads(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.save();
+    ctx.translate(offsetX,offsetY);
+    ctx.scale(scale,scale);
+
+    const bounds=getGeoJsonBounds();
+    const metersPerPixelX = bounds.widthMeters / canvas.width;
+    const metersPerPixelY = bounds.heightMeters / canvas.height;
+    const metersPerPixel=(metersPerPixelX+metersPerPixelY)/2;
+
+    geoJsonDataSets.forEach(dataset=>{
+        dataset.data.features.forEach(feature=>{
+            const roadWidthMeters=feature.properties.width||5;
+            const pixelWidth=roadWidthMeters/(adjustedMetersPerPixel);
+            ctx.lineWidth=pixelWidth;
+            ctx.strokeStyle='gray';
+
+            if(feature.geometry.type==='LineString'){
+                const coords=feature.geometry.coordinates;
+                if(coords.length<2)return;
+                ctx.beginPath();
+                let start=latLngToCanvasPoint(coords[0][1],coords[0][0],bounds);
+                ctx.moveTo(start.x,start.y);
+                for(let i=1;i<coords.length;i++){
+                    let p=latLngToCanvasPoint(coords[i][1],coords[i][0],bounds);
+                    ctx.lineTo(p.x,p.y);
+                }
+                ctx.stroke();
+            } else if(feature.geometry.type==='MultiLineString'){
+                feature.geometry.coordinates.forEach(line=>{
+                    if(line.length<2)return;
+                    ctx.beginPath();
+                    let start=latLngToCanvasPoint(line[0][1],line[0][0],bounds);
+                    ctx.moveTo(start.x,start.y);
+                    for(let i=1;i<line.length;i++){
+                        let p=latLngToCanvasPoint(line[i][1],line[i][0],bounds);
+                        ctx.lineTo(p.x,p.y);
+                    }
+                    ctx.stroke();
+                });
+            }
+        });
+    });
+
+    if(path.length>1){
+        ctx.strokeStyle='red';
+        ctx.lineWidth=2;
+        ctx.beginPath();
+        ctx.moveTo(path[0].x,path[0].y);
+        for(let i=1;i<path.length;i++){
+            ctx.lineTo(path[i].x,path[i].y);
+        }
+        ctx.stroke();
+        for(let p of path){
+            ctx.fillStyle='blue';
+            ctx.beginPath();
+            ctx.arc(p.x,p.y,3,0,2*Math.PI);
+            ctx.fill();
+        }
+    }
+
+    if(simulation) simulation.draw();
+
+    ctx.restore();
+}
+
+function latLngToCanvasPoint(lat,lng,bounds){
+    const xFraction=(lng - bounds.minLng)/(bounds.maxLng-bounds.minLng);
+    const yFraction=(lat - bounds.minLat)/(bounds.maxLat - bounds.minLat);
+    const x=xFraction*canvas.width;
+    const y=(1 - yFraction)*canvas.height;
+    return {x:x,y:y};
+}
+
+function getGeoJsonBounds(){
+    let minLat=Infinity,maxLat=-Infinity,minLng=Infinity,maxLng=-Infinity;
+    geoJsonDataSets.forEach(dataset=>{
+        dataset.data.features.forEach(feature=>{
+            if(feature.geometry.type==='LineString'){
+                feature.geometry.coordinates.forEach(coord=>{
+                    const lng=coord[0],lat=coord[1];
+                    if(lat<minLat)minLat=lat;
+                    if(lat>maxLat)maxLat=lat;
+                    if(lng<minLng)minLng=lng;
+                    if(lng>maxLng)maxLng=lng;
+                });
+            } else if(feature.geometry.type==='MultiLineString'){
+                feature.geometry.coordinates.forEach(line=>{
+                    line.forEach(coord=>{
+                        const lng=coord[0],lat=coord[1];
+                        if(lat<minLat)minLat=lat;
+                        if(lat>maxLat)maxLat=lat;
+                        if(lng<minLng)minLng=lng;
+                        if(lng>maxLng)maxLng=lng;
+                    });
+                });
+            }
+        });
+    });
+    if(minLat===Infinity||maxLat===-Infinity||minLng===Infinity||maxLng===-Infinity){
+        return {minLat:0,maxLat:0,minLng:0,maxLng:0,widthMeters:10,heightMeters:10};
+    }
+    const bottomLeft=[minLng,minLat];
+    const bottomRight=[maxLng,minLat];
+    const topLeft=[minLng,maxLat];
+
+    const widthMeters=turf.distance(bottomLeft,bottomRight,{units:'meters'});
+    const heightMeters=turf.distance(bottomLeft,topLeft,{units:'meters'});
+    return {minLat,maxLat,minLng,maxLng,widthMeters,heightMeters};
+}
+
+class TruckSimulation {
+    constructor(canvas, config, pathInMeters, metersPerPixel) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+        this.config = config;
+        this.metersPerPixel = metersPerPixel;
+        this.path = this.computeMidpoints(pathInMeters);
+        this.lookaheadDistance = 5;
+        this.reset();
+
+        this.previousError=0;this.integral=0;this.kp=2.0;this.ki=0.0;this.kd=0.5;
+    }
+
+    computeMidpoints(path) {
+        let midpoints=[];
+        for(let i=0;i<path.length-1;i++){
+            let mx=(path[i].x+path[i+1].x)/2;
+            let my=(path[i].y+path[i+1].y)/2;
+            midpoints.push({x:mx,y:my});
+        }
+        let newPath=[];
+        for(let i=0;i<path.length-1;i++){
+            newPath.push(path[i]);
+            newPath.push(midpoints[i]);
+        }
+        newPath.push(path[path.length-1]);
+        return newPath;
+    }
+
+    reset() {
+        this.currentTargetIndex=0;
+        this.history=[];
+        this.cornerTrajectories=[[],[],[],[]];
+        this.running=false;
+        const mp=this.metersPerPixel;
+        this.wheelBase=this.config.wheelBase/mp;
+        this.frontOverhang=this.config.frontOverhang/mp;
+        this.rearOverhang=this.config.rearOverhang/mp;
+        this.vehicleWidth=this.config.vehicleWidth/mp;
+        this.maxSteeringAngle=this.degToRad(this.config.maxSteeringAngle);
+        this.initialVelocity=this.config.vehicleSpeed/mp;
+        this.velocity=this.initialVelocity;
+
+        this.x=this.path[0].x;this.y=this.path[0].y;
+        if(this.path.length>1){
+            this.theta=Math.atan2(this.path[1].y - this.path[0].y,this.path[1].x - this.path[0].x);
+        } else {
+            this.theta=0;
+        }
+        this.steeringAngle=0;
+        this.timeStep=0.1;
+        this.updateVehicleState();
+        this.updateStatusDisplay();
+    }
+
+    updatePathAndScale(newPathInMeters,newMetersPerPixel){
+        this.path=this.computeMidpoints(newPathInMeters);
+        this.metersPerPixel=newMetersPerPixel;
+        this.lookaheadDistance=5;
+    }
+
+    start(){
+        if(this.path.length<2){alert('シミュレーションには最低2点のパスが必要です。');return;}
+        this.running=true;
+        this.animate();
+    }
+
+    pause(){
+        this.running=false;if(this.animationFrame)cancelAnimationFrame(this.animationFrame);
+    }
+
+    stop(){
+        this.running=false;if(this.animationFrame)cancelAnimationFrame(this.animationFrame);
+    }
+
+    animate(){
+        if(!this.running)return;
+        this.simulateStep();
+        drawRoads();
+        this.animationFrame=requestAnimationFrame(()=>this.animate());
+    }
+
+    simulateStep(){
+        const targetPoint=this.findLookaheadTarget();
+        if(!targetPoint){this.stop();return;}
+        const dx=targetPoint.x - this.x;
+        const dy=targetPoint.y - this.y;
+        const distToTarget=Math.hypot(dx,dy);
+        if(distToTarget<this.velocity*this.timeStep)return;
+
+        const targetTheta=Math.atan2(dy,dx);
+        let angleDiff=this.normalizeAngle(targetTheta - this.theta);
+        this.integral+=angleDiff*this.timeStep;
+        let derivative=(angleDiff - this.previousError)/this.timeStep;
+        let steeringAdj=this.kp*angleDiff+this.ki*this.integral+this.kd*derivative;
+        this.previousError=angleDiff;
+        if(steeringAdj>this.maxSteeringAngle)steeringAdj=this.maxSteeringAngle;
+        else if(steeringAdj<-this.maxSteeringAngle)steeringAdj=-this.maxSteeringAngle;
+        this.steeringAngle=steeringAdj;
+
+        const angularVel=(this.velocity/this.wheelBase)*Math.tan(this.steeringAngle);
+        this.theta+=angularVel*this.timeStep;
+        this.x+=this.velocity*this.timeStep*Math.cos(this.theta);
+        this.y+=this.velocity*this.timeStep*Math.sin(this.theta);
+
+        const curvature=Math.abs(angularVel);
+        if(curvature>0.1)this.velocity=Math.max(this.initialVelocity*0.5,this.velocity-0.5);
+        else this.velocity=Math.min(this.initialVelocity,this.velocity+0.5);
+
+        this.updateVehicleState();
+        this.updateStatusDisplay();
+    }
+
+    findLookaheadTarget(){
+        const L=this.lookaheadDistance; 
+        let closest=null;let minDist=Infinity;
+        for(let i=0;i<this.path.length-1;i++){
+            const p1=this.path[i],p2=this.path[i+1];
+            let inter=this.getCircleLineIntersection(this.x,this.y,L,p1,p2);
+            if(inter){
+                for(let pt of inter){
+                    let d=Math.hypot(pt.x-this.x,pt.y-this.y);
+                    if(d<minDist&&this.isPointAhead(pt)){
+                        minDist=d;closest=pt;
+                    }
+                }
+            }
+        }
+        return closest;
+    }
+
+    getCircleLineIntersection(cx,cy,r,p1,p2){
+        const dx=p2.x-p1.x;const dy=p2.y-p1.y;
+        const a=dx*dx+dy*dy;
+        const b=2*(dx*(p1.x-cx)+dy*(p1.y-cy));
+        const c=(p1.x-cx)*(p1.x-cx)+(p1.y-cy)*(p1.y-cy)-r*r;
+        const disc=b*b-4*a*c;
+
+        if(disc<0)return null;
+
+        const sqrtD=Math.sqrt(disc);
+        const t1=(-b+sqrtD)/(2*a);
+        const t2=(-b - sqrtD)/(2*a);
+        let intersections=[];
+        if(t1>=0&&t1<=1)intersections.push({x:p1.x+t1*dx,y:p1.y+t1*dy});
+        if(t2>=0&&t2<=1)intersections.push({x:p1.x+t2*dx,y:p1.y+t2*dy});
+        return intersections.length>0?intersections:null;
+    }
+
+    isPointAhead(pt){
+        const dx=pt.x-this.x;const dy=pt.y-this.y;
+        const dot=dx*Math.cos(this.theta)+dy*Math.sin(this.theta);
+        return dot>0;
+    }
+
+    updateVehicleState(){
+        const wb=this.wheelBase,fo=this.frontOverhang,ro=this.rearOverhang,vw=this.vehicleWidth;
+        const halfW=vw/2;const totalL=fo+wb+ro;
+        const ref={x:this.x,y:this.y,theta:this.theta};
+        const corners=[
+            {x:0,y:halfW},{x:0,y:-halfW},{x:-totalL,y:-halfW},{x:-totalL,y:halfW}
+        ];
+        for(let i=0;i<corners.length;i++){
+            let lx=corners[i].x,ly=corners[i].y;
+            let rx=lx*Math.cos(ref.theta)-ly*Math.sin(ref.theta);
+            let ry=lx*Math.sin(ref.theta)+ly*Math.cos(ref.theta);
+            let wx=ref.x+rx,wy=ref.y+ry;
+            this.cornerTrajectories[i].push({x:wx,y:wy});
+        }
+        this.history.push({x:this.x,y:this.y,theta:this.theta});
+    }
+
+    degToRad(d){return d*Math.PI/180;}
+    radToDeg(r){return r*180/Math.PI;}
+    normalizeAngle(a){
+        while(a>Math.PI)a-=2*Math.PI;
+        while(a<-Math.PI)a+=2*Math.PI;
+        return a;
+    }
+
+    updateStatusDisplay(){
+        const mps=this.velocity*this.metersPerPixel;
+        document.getElementById('currentSpeed').textContent=mps.toFixed(2);
+        document.getElementById('currentSteeringAngle').textContent=this.radToDeg(this.steeringAngle).toFixed(2);
+        document.getElementById('currentTheta').textContent=this.radToDeg(this.theta).toFixed(2);
+    }
+
+    draw(){
+        this.ctx.save();
+        this.ctx.translate(offsetX,offsetY);
+        this.ctx.scale(scale,scale);
+
+        const colors=['red','green','blue','orange'];
+        for(let i=0;i<this.cornerTrajectories.length;i++){
+            const traj=this.cornerTrajectories[i];
+            if(traj.length<2)continue;
+            this.ctx.strokeStyle=colors[i];
+            this.ctx.lineWidth=1;
+            this.ctx.beginPath();
+            let mp=this.metersPerPixel;
+            this.ctx.moveTo(traj[0].x/mp,traj[0].y/mp);
+            for(let j=1;j<traj.length;j++){
+                this.ctx.lineTo(traj[j].x/mp,traj[j].y/mp);
+            }
+            this.ctx.stroke();
+        }
+
+        const record=this.history[this.history.length-1];
+        if(record){
+            const wb=this.wheelBase,fo=this.frontOverhang,ro=this.rearOverhang,vw=this.vehicleWidth;
+            const halfW=vw/2;const totalL=fo+wb+ro;
+            const ref={x:record.x,y:record.y,theta:record.theta};
+            const corners=[
+                {x:0,y:halfW},{x:0,y:-halfW},{x:-totalL,y:-halfW},{x:-totalL,y:halfW}
+            ];
+            let mp=this.metersPerPixel;
+            this.ctx.strokeStyle='black';
+            this.ctx.lineWidth=3;
+            this.ctx.beginPath();
+            let first=true;
+            for(let c of corners){
+                let lx=c.x,ly=c.y;
+                let rx=lx*Math.cos(ref.theta)-ly*Math.sin(ref.theta);
+                let ry=lx*Math.sin(ref.theta)+ly*Math.cos(ref.theta);
+                let wx=ref.x+rx,wy=ref.y+ry;
+                if(first){this.ctx.moveTo(wx/mp,wy/mp);first=false;}else this.ctx.lineTo(wx/mp,wy/mp);
+            }
+            this.ctx.closePath();
+            this.ctx.stroke();
+        }
+
+        this.ctx.restore();
+    }
+}
+
+window.onload=init;
+</script>
+</body>
+</html>

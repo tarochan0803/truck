@@ -1,0 +1,1366 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>トラック搬入シミュレーション</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        /* 全体のスタイル */
+        body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
+        /* ヘッダーのスタイル */
+        header { background-color: #333; color: #fff; padding: 10px; text-align: center; }
+        /* メインコンテンツのスタイル */
+        #main { display: flex; height: calc(100vh - 50px); }
+        /* サイドバーのスタイル */
+        #sidebar { width: 300px; background-color: #f4f4f4; overflow-y: auto; padding: 15px; box-sizing: border-box; }
+        /* コンテンツエリアのスタイル */
+        #content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        /* マップとキャンバスのコンテナ */
+        #map, #canvas-container { flex: 1; position: relative; }
+        /* キャンバスのスタイル */
+        #simulationCanvas { width: 100%; height: 100%; cursor: crosshair; background-color: #fff; }
+        /* コントロールパネルのスタイル */
+        .control-group { margin-bottom: 15px; }
+        .control-group label { display: block; margin-bottom: 5px; font-weight: bold; }
+        .control-group input, .control-group button, .control-group select { width: 100%; padding: 8px; box-sizing: border-box; }
+        .control-group button { cursor: pointer; background-color: #333; color: #fff; border: none; }
+        .control-group button:hover { background-color: #555; }
+        /* 選択された道路リストのスタイル */
+        #selected-roads-list { list-style: none; padding: 0; margin: 0; }
+        #selected-roads-list li { padding: 5px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+        /* ステータス表示のスタイル */
+        #status p { margin: 5px 0; }
+        /* モード切替ボタンのスタイル */
+        #modeButtons button { width: 48%; margin-right: 2%; margin-bottom: 10px; box-sizing: border-box; }
+        #modeButtons button:last-child { margin-right: 0; }
+        /* レスポンシブ対応 */
+        @media (max-width: 768px) {
+            #main { flex-direction: column; }
+            #sidebar { width: 100%; height: 50vh; overflow-y: auto; }
+            #content { height: 50vh; }
+        }
+    </style>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js"></script>
+</head>
+<body>
+    <header>
+        <h1>トラック搬入シミュレーション</h1>
+    </header>
+    <div id="main">
+        <div id="sidebar">
+            <div id="map-controls">
+                <h2>マップ操作</h2>
+                <div class="control-group">
+                    <label for="search-input">目的地を検索</label>
+                    <input type="text" id="search-input" placeholder="住所や場所を入力">
+                    <button id="search-button">検索</button>
+                </div>
+                <div class="control-group">
+                    <button id="refresh-data">データを更新</button>
+                </div>
+                <div class="control-group">
+                    <button id="start-route-selection">経路選択モード開始</button>
+                    <button id="confirm-route" disabled>経路決定</button>
+                </div>
+                <div class="control-group">
+                    <button id="exportGeoJSON" disabled>選択道路をGeoJSONとしてエクスポート</button>
+                </div>
+                <div id="selected-roads">
+                    <h3>選択された道路</h3>
+                    <ul id="selected-roads-list"></ul>
+                </div>
+            </div>
+            <div id="truck-controls" style="display:none;">
+                <h2>トラック設定</h2>
+                <div class="control-group">
+                    <label for="wheelBase">ホイールベース (m)</label>
+                    <input type="number" id="wheelBase" value="4.0" step="0.1" min="1">
+                </div>
+                <div class="control-group">
+                    <label for="frontOverhang">前方オーバーハング (m)</label>
+                    <input type="number" id="frontOverhang" value="1.0" step="0.1" min="0">
+                </div>
+                <div class="control-group">
+                    <label for="rearOverhang">後方オーバーハング (m)</label>
+                    <input type="number" id="rearOverhang" value="1.0" step="0.1" min="0">
+                </div>
+                <div class="control-group">
+                    <label for="vehicleWidth">車体幅 (m)</label>
+                    <input type="number" id="vehicleWidth" value="2.5" step="0.1" min="1">
+                </div>
+                <div class="control-group">
+                    <label for="maxSteeringAngle">最大ステアリング角度 (度)</label>
+                    <input type="number" id="maxSteeringAngle" value="45" step="1" min="1" max="60">
+                </div>
+                <div class="control-group">
+                    <label for="vehicleSpeed">初期車速 (m/s)</label>
+                    <input type="number" id="vehicleSpeed" value="5" step="0.1" min="1">
+                </div>
+                <div class="control-group" id="modeButtons">
+                    <button id="drawModeButton" disabled>パス入力モード</button>
+                    <button id="panModeButton" disabled>パンモード</button>
+                </div>
+                <div class="control-group">
+                    <label for="zoomSlider">ズームレベル</label>
+                    <input type="range" id="zoomSlider" min="0.5" max="3" step="0.1" value="1" disabled>
+                </div>
+                <div class="control-group">
+                    <button id="adjustScalePosition" disabled>縮尺・位置を合わせる</button>
+                </div>
+                <div class="control-group">
+                    <button id="startSimulation" disabled>シミュレーション開始</button>
+                    <button id="pauseSimulation" disabled>一時停止</button>
+                    <button id="resetSimulation" disabled>リセット</button>
+                    <button id="clearPath" disabled>パスをクリア</button>
+                </div>
+                <div id="status">
+                    <p>速度: <span id="currentSpeed">0</span> m/s</p>
+                    <p>ステアリング角度: <span id="currentSteeringAngle">0</span> 度</p>
+                    <p>向き: <span id="currentTheta">0</span> 度</p>
+                </div>
+                <div class="control-group">
+                    <button id="backToMapButton" disabled>マップに戻る</button>
+                </div>
+            </div>
+        </div>
+        <div id="content">
+            <div id="map"></div>
+            <div id="canvas-container" style="display:none;">
+                <canvas id="simulationCanvas"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // グローバル変数
+        var map;
+        var roadData = null;
+        var roadLayers = [];
+        var selectedRoads = []; // 選択された道路のリスト
+        var isSelectingRoute = false;
+
+        // キャンバス関連
+        const canvas = document.getElementById('simulationCanvas');
+        const ctx = canvas.getContext('2d');
+        let geoJsonDataSets = []; // GEOJSONデータセット
+
+        // シミュレーション関連
+        let simulation = null;
+
+        // ズームとパンのための変数
+        let scale = 1;
+        let offsetX = 0;
+        let offsetY = 0;
+        let isDragging = false;
+        let dragStart = { x: 0, y: 0 };
+
+        // モード切替関連
+        let canvasMode = 'draw'; // 'draw' または 'pan'
+
+        // 緯度1度あたりの距離（m）
+        const METERS_PER_DEGREE = 111319.9;
+
+        // 初期化関数
+        function init() {
+            // マップの初期化
+            initMap();
+
+            // 道路データの取得
+            fetchRoadData();
+
+            // イベントリスナーの設定
+            setupEventListeners();
+
+            // ウィンドウリサイズ時のキャンバスサイズ調整
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas(); // 初期ロード時にもキャンバスサイズを調整
+        }
+
+        // マップの初期化
+        function initMap() {
+            map = L.map('map', {
+                center: [35.681236, 139.767125], // 東京駅付近
+                zoom: 16,
+                maxZoom: 22,
+                zoomControl: true
+            });
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap contributors',
+                maxZoom: 22
+            }).addTo(map);
+        }
+
+        // イベントリスナーの設定
+        function setupEventListeners() {
+            document.getElementById('search-button').addEventListener('click', searchLocation);
+            document.getElementById('refresh-data').addEventListener('click', fetchRoadData);
+            document.getElementById('start-route-selection').addEventListener('click', startRouteSelection);
+            document.getElementById('confirm-route').addEventListener('click', confirmRoute);
+            document.getElementById('exportGeoJSON').addEventListener('click', exportGeoJSON); // 追加
+
+            // キャンバスのイベントリスナー
+            setupCanvasEvents();
+
+            // トラック設定関連のイベントリスナー
+            document.getElementById('startSimulation').addEventListener('click', startTruckSimulation);
+            document.getElementById('pauseSimulation').addEventListener('click', pauseTruckSimulation);
+            document.getElementById('resetSimulation').addEventListener('click', resetTruckSimulation);
+            document.getElementById('clearPath').addEventListener('click', clearPath);
+            document.getElementById('backToMapButton').addEventListener('click', backToMap);
+
+            // モード切替ボタンのイベントリスナー
+            document.getElementById('drawModeButton').addEventListener('click', () => {
+                canvasMode = 'draw';
+                canvas.style.cursor = 'crosshair';
+            });
+            document.getElementById('panModeButton').addEventListener('click', () => {
+                canvasMode = 'pan';
+                canvas.style.cursor = 'grab';
+            });
+
+            // ズームスライダーのイベントリスナー
+            document.getElementById('zoomSlider').addEventListener('input', (event) => {
+                scale = parseFloat(event.target.value);
+                drawRoads();
+            });
+
+            // 縮尺・位置を合わせるボタンのイベントリスナー
+            document.getElementById('adjustScalePosition').addEventListener('click', adjustScaleAndPosition);
+        }
+
+        // キャンバスのサイズ調整
+        function resizeCanvas() {
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+            drawRoads();
+        }
+
+        // 道路データの取得
+        function fetchRoadData() {
+            var bounds = map.getBounds();
+            var overpassUrl = 'https://overpass-api.de/api/interpreter';
+            var query = `
+                [out:json][timeout:25];
+                (
+                    way["highway"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});
+                );
+                out geom;
+            `;
+
+            // 既存の道路レイヤーを削除
+            roadLayers.forEach(function(layer) {
+                map.removeLayer(layer);
+            });
+            roadLayers = [];
+            selectedRoads = [];
+            isSelectingRoute = false;
+            document.getElementById('confirm-route').disabled = true;
+            document.getElementById('exportGeoJSON').disabled = true;
+            updateSelectedRoadsList();
+
+            // データ取得
+            fetch(overpassUrl, {
+                method: 'POST',
+                body: query
+            })
+            .then(response => response.json())
+            .then(data => {
+                // エラーチェック
+                if (!data) {
+                    console.error("サーバーからデータが取得できませんでした。");
+                    alert("サーバーからデータが取得できませんでした。");
+                    return;
+                }
+                if (data.remark) {
+                    console.warn("Overpass API remark:", data.remark);
+                    alert(`Overpass API remark: ${data.remark}`);
+                }
+
+                roadData = data;
+                if (!roadData || !roadData.elements) {
+                    console.error("道路データが取得できませんでした。");
+                    alert("道路データが取得できませんでした。");
+                    return;
+                }
+
+                // 道路データをフィルタリングしてGeoJSONに変換
+                const highways = roadData.elements.filter(el => 
+                    el.type === 'way' && 
+                    el.tags && 
+                    el.tags.highway && 
+                    el.geometry && 
+                    Array.isArray(el.geometry) && 
+                    el.geometry.length > 0
+                );
+
+                // geometryが存在しない要素の数をログ出力
+                const roadsWithoutGeometry = roadData.elements.filter(el => 
+                    el.type === 'way' && 
+                    el.tags && 
+                    el.tags.highway && 
+                    (!el.geometry || !Array.isArray(el.geometry))
+                );
+                if (roadsWithoutGeometry.length > 0) {
+                    console.warn(`${roadsWithoutGeometry.length} 件の道路が geometry を持っていません。`);
+                }
+
+                if (highways.length === 0) {
+                    console.warn("フィルタリング後の道路データがありません。");
+                    alert("フィルタリング後の道路データがありません。");
+                    return;
+                }
+
+                geoJsonDataSets = highways.map(el => {
+                    const coords = el.geometry.map(coord => [coord.lon, coord.lat]);
+                    return {
+                        id: el.id,
+                        name: el.tags.name || `道路 ${el.id}`,
+                        geojson: turf.lineString(coords, el.tags)
+                    };
+                });
+
+                // 地図に道路を追加
+                geoJsonDataSets.forEach(dataset => {
+                    const polyline = L.polyline(dataset.geojson.geometry.coordinates.map(coord => [coord[1], coord[0]]), {
+                        color: 'blue',
+                        weight: 3
+                    }).addTo(map);
+
+                    polyline.datasetId = dataset.id; // 道路IDを関連付け
+                    polyline.datasetName = dataset.name;
+
+                    // 道路クリック時のイベント
+                    polyline.on('click', function() {
+                        if (isSelectingRoute) {
+                            toggleRoadSelection(polyline);
+                        }
+                    });
+
+                    roadLayers.push(polyline);
+                });
+
+                // デバッグ: 読み込んだ道路の数を確認
+                console.log(`読み込んだ道路セグメント数: ${roadLayers.length}`);
+                alert(`読み込んだ道路セグメント数: ${roadLayers.length}`);
+            })
+            .catch(err => {
+                console.error("Overpass APIのエラー:", err);
+                alert("Overpass APIのエラーが発生しました。");
+            });
+        }
+
+        // 道路の選択/解除をトグル
+        function toggleRoadSelection(polyline) {
+            var index = selectedRoads.indexOf(polyline);
+            if (index === -1) {
+                // 道路を選択
+                selectedRoads.push(polyline);
+                polyline.setStyle({ color: 'orange' });
+            } else {
+                // 道路の選択を解除
+                selectedRoads.splice(index, 1);
+                polyline.setStyle({ color: 'blue', weight: 3 });
+            }
+            updateSelectedRoadsList();
+
+            // 「経路決定」ボタンと「GeoJSONエクスポート」ボタンの有効化/無効化
+            const hasSelected = selectedRoads.length > 0;
+            document.getElementById('confirm-route').disabled = !hasSelected;
+            document.getElementById('exportGeoJSON').disabled = !hasSelected;
+        }
+
+        // 選択された道路のリストを更新
+        function updateSelectedRoadsList() {
+            var list = document.getElementById('selected-roads-list');
+            list.innerHTML = '';
+
+            selectedRoads.forEach(function(polyline, idx) {
+                var li = document.createElement('li');
+
+                var nameSpan = document.createElement('span');
+                nameSpan.className = 'road-name';
+                nameSpan.textContent = polyline.datasetName;
+                li.appendChild(nameSpan);
+
+                var actionsDiv = document.createElement('div');
+                actionsDiv.className = 'road-actions';
+
+                // 上ボタン
+                var upButton = document.createElement('button');
+                upButton.textContent = '↑';
+                upButton.title = '順序を上に移動';
+                upButton.onclick = function() { moveRoadUp(idx); };
+                actionsDiv.appendChild(upButton);
+
+                // 下ボタン
+                var downButton = document.createElement('button');
+                downButton.textContent = '↓';
+                downButton.title = '順序を下に移動';
+                downButton.onclick = function() { moveRoadDown(idx); };
+                actionsDiv.appendChild(downButton);
+
+                // 選択解除ボタン
+                var removeButton = document.createElement('button');
+                removeButton.textContent = '×';
+                removeButton.title = '選択解除';
+                removeButton.onclick = function() { toggleRoadSelection(polyline); };
+                actionsDiv.appendChild(removeButton);
+
+                li.appendChild(actionsDiv);
+
+                list.appendChild(li);
+            });
+        }
+
+        // 道路の順序を上に移動
+        function moveRoadUp(index) {
+            if (index === 0) return;
+            var temp = selectedRoads[index - 1];
+            selectedRoads[index - 1] = selectedRoads[index];
+            selectedRoads[index] = temp;
+            updateSelectedRoadsList();
+        }
+
+        // 道路の順序を下に移動
+        function moveRoadDown(index) {
+            if (index === selectedRoads.length - 1) return;
+            var temp = selectedRoads[index + 1];
+            selectedRoads[index + 1] = selectedRoads[index];
+            selectedRoads[index] = temp;
+            updateSelectedRoadsList();
+        }
+
+        // 目的地の検索
+        function searchLocation() {
+            var query = document.getElementById('search-input').value;
+            if (query) {
+                fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data && data.length > 0) {
+                        var result = data[0];
+                        var lat = parseFloat(result.lat);
+                        var lon = parseFloat(result.lon);
+                        map.setView([lat, lon], 16);
+                        L.marker([lat, lon]).addTo(map).bindPopup(result.display_name).openPopup();
+                    } else {
+                        alert('場所が見つかりませんでした。');
+                    }
+                })
+                .catch(err => console.error(err));
+            }
+        }
+
+        // 経路選択モードの開始
+        function startRouteSelection() {
+            isSelectingRoute = true;
+            alert('経路として進みたい道路をクリックしてください。選択を終了するには「経路決定」ボタンを押してください。');
+            document.getElementById('confirm-route').disabled = selectedRoads.length === 0;
+        }
+
+        // 経路決定
+        function confirmRoute() {
+            if (selectedRoads.length === 0) {
+                alert('経路が選択されていません。');
+                return;
+            }
+
+            // デバッグ: 選択された道路セグメントの情報をログ出力
+            console.log("選択された道路セグメント:", selectedRoads);
+
+            // 選択された道路セグメントの座標を結合して中心線パスを作成
+            try {
+                var combinedCoords = [];
+                selectedRoads.forEach((polyline, index) => {
+                    var coords = polyline.geojson.geometry.coordinates;
+                    if (index === 0) {
+                        combinedCoords = combinedCoords.concat(coords);
+                    } else {
+                        // 最後の点と現在の道路の最初の点が近い場合のみ結合
+                        var lastCoord = combinedCoords[combinedCoords.length - 1];
+                        var currentFirstCoord = coords[0];
+                        var distance = turf.distance(turf.point([lastCoord[0], lastCoord[1]]), turf.point([currentFirstCoord[0], currentFirstCoord[1]]), { units: 'meters' });
+                        console.log(`道路${index}と道路${index + 1}の接続距離: ${distance.toFixed(2)} meters`);
+                        if (distance < 10) { // 10メートル以内なら結合
+                            combinedCoords = combinedCoords.concat(coords.slice(1));
+                        } else {
+                            throw new Error(`道路${index + 1}と道路${index + 2}が連続していません。`);
+                        }
+                    }
+                });
+
+                // 中心線パスを作成
+                var centerLine = turf.lineString(combinedCoords, {
+                    "name": "中心線パス"
+                });
+
+                // デバッグ: 中心線パスの情報をログ出力
+                console.log("中心線パス:", centerLine);
+
+                // GEOJSONデータをキャンバスに渡して描画
+                geoJsonDataSets = [{
+                    id: 1,
+                    name: "選択された経路",
+                    geojson: centerLine
+                }];
+
+                createGeoJsonControls();
+
+                // マップとコントロールパネルを非表示
+                document.getElementById('map').style.display = 'none';
+                document.getElementById('map-controls').style.display = 'none';
+
+                // キャンバスとトラック設定パネルを表示
+                document.getElementById('canvas-container').style.display = 'block';
+                document.getElementById('truck-controls').style.display = 'block';
+
+                // キャンバスのサイズを調整
+                resizeCanvas();
+
+                // ズーム・パンのリセット
+                scale = 1;
+                offsetX = 0;
+                offsetY = 0;
+                document.getElementById('zoomSlider').value = 1;
+
+                // 縮尺と位置を合わせる
+                adjustScaleAndPosition();
+
+                // 道路を描画
+                drawRoads();
+
+            } catch (error) {
+                alert(`経路決定中にエラーが発生しました: ${error.message}`);
+                console.error("経路決定エラー:", error);
+            }
+        }
+
+        // 選択状態をリセット
+        function resetSelection() {
+            // 選択された道路のスタイルを元に戻す
+            selectedRoads.forEach(function(polyline) {
+                polyline.setStyle({ color: 'blue', weight: 3 });
+            });
+
+            // 道路リストをクリア
+            selectedRoads = [];
+            updateSelectedRoadsList();
+
+            // 「経路決定」ボタンを無効化
+            document.getElementById('confirm-route').disabled = true;
+
+            // モードを終了
+            isSelectingRoute = false;
+        }
+
+        // キャンバスイベントの設定
+        function setupCanvasEvents() {
+            // パン操作
+            canvas.addEventListener('mousedown', (event) => {
+                if (canvasMode === 'pan') {
+                    isDragging = true;
+                    dragStart.x = event.clientX - offsetX;
+                    dragStart.y = event.clientY - offsetY;
+                    canvas.style.cursor = 'grabbing';
+                }
+            });
+
+            canvas.addEventListener('mousemove', (event) => {
+                if (isDragging) {
+                    offsetX = event.clientX - dragStart.x;
+                    offsetY = event.clientY - dragStart.y;
+                    drawRoads();
+                }
+            });
+
+            canvas.addEventListener('mouseup', () => {
+                isDragging = false;
+                if (canvasMode === 'pan') {
+                    canvas.style.cursor = 'grab';
+                }
+            });
+
+            canvas.addEventListener('mouseleave', () => {
+                isDragging = false;
+                if (canvasMode === 'pan') {
+                    canvas.style.cursor = 'grab';
+                }
+            });
+        }
+
+        // 道幅入力フォームの生成
+        function createGeoJsonControls() {
+            const container = document.getElementById('truck-controls');
+            // 既存のフォームを削除
+            const existingControls = container.querySelectorAll('.geojson-controls');
+            existingControls.forEach(ctrl => ctrl.remove());
+
+            geoJsonDataSets.forEach((dataset, datasetIndex) => {
+                const geoJsonControl = document.createElement('div');
+                geoJsonControl.classList.add('geojson-controls');
+
+                const title = document.createElement('h3');
+                title.innerText = dataset.name;
+
+                geoJsonControl.appendChild(title);
+
+                // 道幅編集フォーム
+                const roadControl = document.createElement('div');
+                roadControl.className = 'road-controls';
+
+                const label = document.createElement('label');
+                label.innerText = `経路の道幅 (m): `;
+                label.setAttribute('for', `roadWidthInput-${datasetIndex}`);
+
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.id = `roadWidthInput-${datasetIndex}`;
+                input.value = dataset.geojson.properties.width || 5;
+                input.min = 1;
+                input.step = 1;
+
+                const button = document.createElement('button');
+                button.innerText = `幅を設定`;
+                button.onclick = () => {
+                    const newWidth = parseFloat(input.value);
+                    if (newWidth > 0) {
+                        dataset.geojson.properties.width = newWidth;
+                        drawRoads();
+                    } else {
+                        alert('幅は正の数でなければなりません。');
+                    }
+                };
+
+                roadControl.appendChild(label);
+                roadControl.appendChild(input);
+                roadControl.appendChild(button);
+                geoJsonControl.appendChild(roadControl);
+
+                container.insertBefore(geoJsonControl, container.firstChild);
+            });
+
+            // コントロールボタンを有効化
+            document.getElementById('drawModeButton').disabled = false;
+            document.getElementById('panModeButton').disabled = false;
+            document.getElementById('zoomSlider').disabled = false;
+            document.getElementById('adjustScalePosition').disabled = false;
+            document.getElementById('startSimulation').disabled = false;
+            document.getElementById('backToMapButton').disabled = false;
+        }
+
+        // 縮尺・位置を合わせる関数を修正
+        function adjustScaleAndPosition() {
+            if (geoJsonDataSets.length > 0 && geoJsonDataSets[0].geojson.geometry.coordinates.length > 1) {
+                const bounds = getGeoJsonBounds();
+                const canvasWidth = canvas.width;
+                const canvasHeight = canvas.height;
+                const metersPerPixelX = bounds.widthMeters / canvasWidth;
+                const metersPerPixelY = bounds.heightMeters / canvasHeight;
+                const metersPerPixel = Math.max(metersPerPixelX, metersPerPixelY);
+
+                // ズームレベルの調整
+                const optimalScale = calculateOptimalScale(bounds, canvasWidth, canvasHeight);
+                scale = optimalScale;
+                document.getElementById('zoomSlider').value = scale;
+
+                // トラックの初期位置をパスの始点に設定
+                if (simulation) {
+                    const pathInMeters = geoJsonDataSets[0].geojson.geometry.coordinates.map(coord => {
+                        const point = latLngToMeters(coord[1], coord[0], bounds);
+                        return { x: point.x, y: point.y };
+                    });
+                    simulation.updatePathAndScale(pathInMeters, metersPerPixel);
+
+                    // トラックの初期位置と向きを設定
+                    simulation.x = pathInMeters[0].x;
+                    simulation.y = pathInMeters[0].y;
+                    simulation.theta = Math.atan2(pathInMeters[1].y - pathInMeters[0].y, pathInMeters[1].x - pathInMeters[0].x);
+
+                    // オフセットを調整して、トラックがキャンバスの中心に来るようにする
+                    offsetX = canvasWidth / 2 - simulation.x / metersPerPixel * scale;
+                    offsetY = canvasHeight / 2 - simulation.y / metersPerPixel * scale;
+                }
+
+                // 道路の再描画
+                drawRoads();
+            }
+        }
+
+        // ズームレベルを最適化する関数
+        function calculateOptimalScale(bounds, canvasWidth, canvasHeight) {
+            const widthScale = canvasWidth * 0.8 / (bounds.widthMeters);
+            const heightScale = canvasHeight * 0.8 / (bounds.heightMeters);
+            return Math.min(widthScale, heightScale);
+        }
+
+        // 道路描画関数
+        function drawRoads() {
+            const canvasWidth = canvas.width;
+            const canvasHeight = canvas.height;
+
+            // キャンバスをクリア
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+            if (geoJsonDataSets.length === 0) {
+                console.log("geoJsonDataSets が空です。");
+                return;
+            }
+
+            const bounds = getGeoJsonBounds();
+
+            // キャンバス上のピクセルあたりのメートル数を計算
+            const metersPerPixelX = bounds.widthMeters / canvasWidth;
+            const metersPerPixelY = bounds.heightMeters / canvasHeight;
+            const metersPerPixel = (metersPerPixelX + metersPerPixelY) / 2; // 平均値
+
+            ctx.save();
+            ctx.translate(offsetX, offsetY);
+            ctx.scale(scale, scale);
+
+            geoJsonDataSets.forEach(dataset => {
+                if (dataset.geojson.geometry.type === 'LineString') {
+                    const coordinates = dataset.geojson.geometry.coordinates;
+                    const pixelCoords = coordinates.map(coord => {
+                        const point = latLngToMeters(coord[1], coord[0], bounds);
+                        return {
+                            x: point.x,
+                            y: point.y
+                        };
+                    });
+
+                    // 道路のパスを描画
+                    ctx.beginPath();
+                    ctx.lineWidth = (dataset.geojson.properties.width || 5) / metersPerPixel;
+                    ctx.strokeStyle = 'gray';
+
+                    ctx.moveTo(pixelCoords[0].x, pixelCoords[0].y);
+                    for (let i = 1; i < pixelCoords.length; i++) {
+                        ctx.lineTo(pixelCoords[i].x, pixelCoords[i].y);
+                    }
+                    ctx.stroke();
+
+                    // 道幅の境界線を描画
+                    const roadWidth = dataset.geojson.properties.width || 5;
+                    const halfWidth = roadWidth / 2 / metersPerPixel;
+
+                    ctx.lineWidth = 1;
+                    ctx.strokeStyle = 'black';
+
+                    for (let i = 0; i < pixelCoords.length - 1; i++) {
+                        const p1 = pixelCoords[i];
+                        const p2 = pixelCoords[i + 1];
+                        const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+                        const offset1 = {
+                            x: p1.x - halfWidth * Math.sin(angle),
+                            y: p1.y + halfWidth * Math.cos(angle)
+                        };
+                        const offset2 = {
+                            x: p2.x - halfWidth * Math.sin(angle),
+                            y: p2.y + halfWidth * Math.cos(angle)
+                        };
+                        const offset3 = {
+                            x: p1.x + halfWidth * Math.sin(angle),
+                            y: p1.y - halfWidth * Math.cos(angle)
+                        };
+                        const offset4 = {
+                            x: p2.x + halfWidth * Math.sin(angle),
+                            y: p2.y - halfWidth * Math.cos(angle)
+                        };
+
+                        ctx.beginPath();
+                        ctx.moveTo(offset1.x, offset1.y);
+                        ctx.lineTo(offset2.x, offset2.y);
+                        ctx.stroke();
+
+                        ctx.beginPath();
+                        ctx.moveTo(offset3.x, offset3.y);
+                        ctx.lineTo(offset4.x, offset4.y);
+                        ctx.stroke();
+                    }
+                }
+            });
+
+            // シミュレーションの描画
+            if (simulation) {
+                simulation.draw();
+            }
+
+            ctx.restore();
+        }
+
+        // 緯度経度をメートル単位の相対座標に変換
+        function latLngToMeters(lat, lng, bounds) {
+            // 基準点を最初のポイントに設定
+            if (!latLngToMeters.origin) {
+                latLngToMeters.origin = turf.point([bounds.minLng, bounds.minLat]);
+                console.log(`基準点設定: (${bounds.minLng}, ${bounds.minLat})`);
+            }
+
+            var from = latLngToMeters.origin;
+            var to = turf.point([lng, lat]);
+
+            var distance = turf.distance(from, to, { units: 'meters' });
+            var bearing = turf.bearing(from, to);
+
+            var x = distance * Math.cos(bearing * Math.PI / 180);
+            var y = distance * Math.sin(bearing * Math.PI / 180);
+
+            // デバッグ: 変換結果をログ出力
+            console.log(`latLngToMeters: (${lat}, ${lng}) -> (${x.toFixed(2)}, ${y.toFixed(2)})`);
+
+            return { x: x, y: y };
+        }
+
+        // GEOJSONデータの範囲と実際の距離を取得
+        function getGeoJsonBounds() {
+            // すべての座標点を収集
+            let allCoords = [];
+            geoJsonDataSets.forEach(dataset => {
+                if (dataset.geojson.geometry.type === 'LineString') {
+                    allCoords = allCoords.concat(dataset.geojson.geometry.coordinates);
+                }
+            });
+
+            // 座標の配列からバウンディングボックスを計算
+            const bbox = turf.bbox(turf.lineString(allCoords));
+
+            // 最小および最大の緯度経度を取得
+            const minLng = bbox[0];
+            const minLat = bbox[1];
+            const maxLng = bbox[2];
+            const maxLat = bbox[3];
+
+            // 実際の距離を計算
+            const bottomLeft = [minLng, minLat];
+            const bottomRight = [maxLng, minLat];
+            const topLeft = [minLng, maxLat];
+
+            const widthMeters = turf.distance(turf.point(bottomLeft), turf.point(bottomRight), { units: 'meters' });
+            const heightMeters = turf.distance(turf.point(bottomLeft), turf.point(topLeft), { units: 'meters' });
+
+            return { minLat, maxLat, minLng, maxLng, widthMeters, heightMeters };
+        }
+
+        // GeoJSONをエクスポートする関数
+        function exportGeoJSON() {
+            if (selectedRoads.length === 0) {
+                alert('エクスポートする道路が選択されていません。');
+                return;
+            }
+
+            const selectedGeoJSON = {
+                type: "FeatureCollection",
+                features: selectedRoads.map(polyline => {
+                    const coords = polyline.geojson.geometry.coordinates;
+                    return {
+                        type: "Feature",
+                        properties: {
+                            name: polyline.datasetName
+                        },
+                        geometry: {
+                            type: "LineString",
+                            coordinates: coords
+                        }
+                    };
+                })
+            };
+
+            console.log("選択された道路のGeoJSON:", selectedGeoJSON);
+
+            // GeoJSONをダウンロードリンクとして提供
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(selectedGeoJSON, null, 2));
+            const downloadAnchorNode = document.createElement('a');
+            downloadAnchorNode.setAttribute("href", dataStr);
+            downloadAnchorNode.setAttribute("download", "selected_roads.geojson");
+            document.body.appendChild(downloadAnchorNode); // Firefoxでは必要
+            downloadAnchorNode.click();
+            downloadAnchorNode.remove();
+        }
+
+        // TruckSimulationクラスを定義します
+        class TruckSimulation {
+            constructor(canvas, config, pathInMeters, metersPerPixel) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.config = config;
+                this.path = pathInMeters; // 中心線パスの座標
+                this.metersPerPixel = metersPerPixel;
+                this.lookaheadDistance = 10; // ルックアヘッド距離（メートル）
+                this.reset();
+
+                // PID制御用の変数
+                this.previousError = 0;
+                this.integral = 0;
+                this.kp = 2.0;
+                this.ki = 0.0;
+                this.kd = 0.5;
+
+                // 四隅の軌跡を保存する変数
+                this.cornerHistory = [];
+                this.historyLength = 50; // 50ステップ分(5秒分)の履歴を保存
+            }
+
+            reset() {
+                this.currentTargetIndex = 1; // 初期ターゲットは2番目のポイント
+                this.history = [];
+                this.running = false;
+
+                // 車両のパラメータを設定
+                this.wheelBase = this.config.wheelBase;
+                this.frontOverhang = this.config.frontOverhang;
+                this.rearOverhang = this.config.rearOverhang;
+                this.vehicleWidth = this.config.vehicleWidth;
+                this.maxSteeringAngle = this.degToRad(this.config.maxSteeringAngle);
+                this.initialVelocity = this.config.vehicleSpeed;
+                this.velocity = this.initialVelocity;
+
+                // 初期位置と向き（前輪の位置）
+                this.x = this.path[0].x;
+                this.y = this.path[0].y;
+                if (this.path.length > 1) {
+                    this.theta = Math.atan2(this.path[1].y - this.path[0].y, this.path[1].x - this.path[0].x);
+                } else {
+                    this.theta = 0;
+                }
+
+                this.steeringAngle = 0; // 初期ステアリング角度
+                this.timeStep = 0.1; // 秒単位
+
+                // 状態更新
+                this.updateVehicleState();
+                this.updateStatusDisplay();
+
+                // 四隅の軌跡をリセット
+                this.cornerHistory = [];
+            }
+
+            start() {
+                if (this.path.length < 2) {
+                    alert('シミュレーションには最低2点のパスが必要です。');
+                    return;
+                }
+                this.running = true;
+                this.animate();
+            }
+
+            pause() {
+                this.running = false;
+                if (this.animationFrame) {
+                    cancelAnimationFrame(this.animationFrame);
+                }
+            }
+
+            stop() {
+                this.running = false;
+                if (this.animationFrame) {
+                    cancelAnimationFrame(this.animationFrame);
+                }
+            }
+
+            animate() {
+                if (!this.running) return;
+                this.simulateStep();
+                drawRoads(); // キャンバス全体を再描画
+                this.animationFrame = requestAnimationFrame(() => this.animate());
+            }
+
+            simulateStep() {
+                if (this.currentTargetIndex >= this.path.length) {
+                    this.stop();
+                    alert("シミュレーションが終了しました。");
+                    return;
+                }
+
+                const targetPoint = this.path[this.currentTargetIndex];
+                const dx = targetPoint.x - this.x;
+                const dy = targetPoint.y - this.y;
+                const distanceToTarget = Math.hypot(dx, dy);
+
+                // 目標点に近づいたら次のポイントをターゲットにする
+                if (distanceToTarget < this.velocity * this.timeStep) {
+                    this.currentTargetIndex++;
+                    return;
+                }
+
+                const targetTheta = Math.atan2(dy, dx);
+
+                // 角度差の計算
+                let angleDiff = this.normalizeAngle(targetTheta - this.theta);
+
+                // PID制御でステアリング角度を更新
+                this.integral += angleDiff * this.timeStep;
+                let derivative = (angleDiff - this.previousError) / this.timeStep;
+                let steeringAdjustment = this.kp * angleDiff + this.ki * this.integral + this.kd * derivative;
+                this.previousError = angleDiff;
+
+                // ステアリング角度の制限
+                if (steeringAdjustment > this.maxSteeringAngle) {
+                    steeringAdjustment = this.maxSteeringAngle;
+                } else if (steeringAdjustment < -this.maxSteeringAngle) {
+                    steeringAdjustment = -this.maxSteeringAngle;
+                }
+
+                this.steeringAngle = steeringAdjustment;
+
+                // 車体の向きの更新（バイシクルモデル）
+                const angularVelocity = (this.velocity / this.wheelBase) * Math.tan(this.steeringAngle);
+                this.theta += angularVelocity * this.timeStep;
+
+                // 車体の位置の更新
+                this.x += this.velocity * this.timeStep * Math.cos(this.theta);
+                this.y += this.velocity * this.timeStep * Math.sin(this.theta);
+
+                // 車速の動的調整（カーブ中に減速）
+                const curvature = Math.abs(angularVelocity);
+                if (curvature > 0.1) { // カーブの半径が小さい場合
+                    this.velocity = Math.max(this.initialVelocity * 0.5, this.velocity - 0.5); // 減速
+                } else {
+                    this.velocity = Math.min(this.initialVelocity, this.velocity + 0.5); // 加速
+                }
+
+                // 車両の状態を更新
+                this.updateVehicleState();
+                this.updateStatusDisplay();
+
+                // 視点を追尾
+                followTruck();
+            }
+
+            updateVehicleState() {
+                this.history.push({
+                    x: this.x,
+                    y: this.y,
+                    theta: this.theta
+                });
+                // 四隅の軌跡を計算して保存
+                this.calculateCornerHistory();
+            }
+            
+            calculateCornerHistory() {
+                const wheelBase = this.wheelBase;
+                const frontOverhang = this.frontOverhang;
+                const rearOverhang = this.rearOverhang;
+                const vehicleWidth = this.vehicleWidth;
+                const halfWidth = vehicleWidth / 2;
+                const totalLength = frontOverhang + wheelBase + rearOverhang;
+
+                // 各ステップの四隅の位置を計算
+                const currentCorners = this.history.map(record => {
+                    const referencePoint = {
+                        x: record.x,
+                        y: record.y,
+                        theta: record.theta
+                    };
+
+                    const corners = [
+                        { x: 0, y: halfWidth },   // 前左
+                        { x: 0, y: -halfWidth },  // 前右
+                        { x: -totalLength, y: -halfWidth }, // 後右
+                        { x: -totalLength, y: halfWidth }   // 後左
+                    ];
+
+                    return corners.map(corner => {
+                        const localX = corner.x;
+                        const localY = corner.y;
+                        const rotatedX = localX * Math.cos(referencePoint.theta) - localY * Math.sin(referencePoint.theta);
+                        const rotatedY = localX * Math.sin(referencePoint.theta) + localY * Math.cos(referencePoint.theta);
+                        const worldX = referencePoint.x + rotatedX;
+                        const worldY = referencePoint.y + rotatedY;
+                        return {
+                            x: worldX / this.metersPerPixel,
+                            y: worldY / this.metersPerPixel
+                        };
+                    });
+                });
+
+                // 過去の一定時間分の軌跡を保存
+                this.cornerHistory.push(currentCorners);
+                if (this.cornerHistory.length > this.historyLength) {
+                    this.cornerHistory.shift();
+                }
+            }
+
+            draw() {
+                this.ctx.save();
+                this.ctx.translate(offsetX, offsetY);
+                this.ctx.scale(scale, scale);
+
+                // 現在の状態の描画
+                this.drawCurrentState();
+
+                // 四隅の軌跡を描画
+                this.drawCornerHistory();
+
+                this.ctx.restore();
+            }
+
+            drawCurrentState() {
+                const record = this.history[this.history.length - 1];
+                if (!record) return;
+
+                // トラックを描画
+                this.drawTruck(record);
+            }
+
+            drawTruck(record) {
+                if (!record) return;
+
+                const wheelBase = this.wheelBase;
+                const frontOverhang = this.frontOverhang;
+                const rearOverhang = this.rearOverhang;
+                const vehicleWidth = this.vehicleWidth;
+
+                const halfWidth = vehicleWidth / 2;
+
+                // 車両の全長
+                const totalLength = frontOverhang + wheelBase + rearOverhang;
+
+                // 車両の前輪を基準とする
+                const referencePoint = {
+                    x: record.x,
+                    y: record.y,
+                    theta: record.theta
+                };
+
+                // 車両の四隅の相対位置（前輪基準）
+                const corners = [
+                    { x: 0, y: halfWidth },   // corner1: 前左
+                    { x: 0, y: -halfWidth },  // corner2: 前右
+                    { x: -totalLength, y: -halfWidth }, // corner3: 後右
+                    { x: -totalLength, y: halfWidth }   // corner4: 後左
+                ];
+
+                // 各コーナーの絶対位置を計算
+                const transformedCorners = [];
+                for (let i = 0; i < corners.length; i++) {
+                    const localX = corners[i].x;
+                    const localY = corners[i].y;
+                    const rotatedX = localX * Math.cos(referencePoint.theta) - localY * Math.sin(referencePoint.theta);
+                    const rotatedY = localX * Math.sin(referencePoint.theta) + localY * Math.cos(referencePoint.theta);
+                    const worldX = referencePoint.x + rotatedX;
+                    const worldY = referencePoint.y + rotatedY;
+                    transformedCorners.push({
+                        x: worldX / this.metersPerPixel,
+                        y: worldY / this.metersPerPixel
+                    });
+                }
+
+                // トラックの四角形を描画
+                this.ctx.strokeStyle = 'black';
+                this.ctx.lineWidth = 3;
+                this.ctx.beginPath();
+                this.ctx.moveTo(transformedCorners[0].x, transformedCorners[0].y);
+                for (let i = 1; i < transformedCorners.length; i++) {
+                    this.ctx.lineTo(transformedCorners[i].x, transformedCorners[i].y);
+                }
+                this.ctx.closePath();
+                this.ctx.stroke();
+            }
+
+            drawCornerHistory() {
+                if (this.cornerHistory.length < 2) return;
+
+                const colors = ['red', 'blue', 'green', 'yellow']; // 四隅の色
+
+                for (let i = 0; i < this.cornerHistory[0].length; i++) { // 各コーナー
+                    this.ctx.beginPath();
+                    this.ctx.strokeStyle = colors[i];
+                    this.ctx.lineWidth = 1;
+
+                    for (let j = 0; j < this.cornerHistory.length - 1; j++) { // 各ステップ
+                        const startPoint = this.cornerHistory[j][i];
+                        const endPoint = this.cornerHistory[j + 1][i];
+
+                        // 線形補間を行って滑らかに軌跡を描画
+                        for (let k = 0; k <= 10; k++) {
+                            const x = startPoint.x + (endPoint.x - startPoint.x) * (k / 10);
+                            const y = startPoint.y + (endPoint.y - startPoint.y) * (k / 10);
+
+                            if (j === 0 && k === 0) {
+                                this.ctx.moveTo(x, y);
+                            } else {
+                                this.ctx.lineTo(x, y);
+                            }
+                        }
+                    }
+                    this.ctx.stroke();
+                }
+            }
+
+            degToRad(degrees) {
+                return degrees * Math.PI / 180;
+            }
+
+            radToDeg(radians) {
+                return radians * 180 / Math.PI;
+            }
+
+            normalizeAngle(angle) {
+                while (angle > Math.PI) angle -= 2 * Math.PI;
+                while (angle < -Math.PI) angle += 2 * Math.PI;
+                return angle;
+            }
+
+            updateStatusDisplay() {
+                document.getElementById('currentSpeed').textContent = (this.velocity).toFixed(2);
+                document.getElementById('currentSteeringAngle').textContent = this.radToDeg(this.steeringAngle).toFixed(2);
+                document.getElementById('currentTheta').textContent = this.radToDeg(this.theta).toFixed(2);
+            }
+
+            // パスとスケールを更新するメソッドを追加
+            updatePathAndScale(newPathInMeters, newMetersPerPixel) {
+                this.path = newPathInMeters;
+                this.metersPerPixel = newMetersPerPixel;
+                this.lookaheadDistance = 10; // 必要なら変更
+                this.reset();
+                this.start();
+            }
+        }
+
+        // 視点をトラックを追尾する関数
+        function followTruck() {
+            if (!simulation || !simulation.history.length) return;
+
+            const record = simulation.history[simulation.history.length - 1];
+            const truckX = record.x / simulation.metersPerPixel;
+            const truckY = record.y / simulation.metersPerPixel;
+
+            // キャンバスの中央にトラックが来るようにオフセットを計算
+            offsetX = canvas.width / 2 - truckX * scale;
+            offsetY = canvas.height / 2 - truckY * scale;
+        }
+
+        // シミュレーション開始・停止などの関数
+        function startTruckSimulation() {
+            // ユーザー入力を取得
+            const wheelBase = parseFloat(document.getElementById('wheelBase').value);
+            const frontOverhang = parseFloat(document.getElementById('frontOverhang').value);
+            const rearOverhang = parseFloat(document.getElementById('rearOverhang').value);
+            const vehicleWidth = parseFloat(document.getElementById('vehicleWidth').value);
+            const maxSteeringAngle = parseFloat(document.getElementById('maxSteeringAngle').value);
+            const vehicleSpeed = parseFloat(document.getElementById('vehicleSpeed').value);
+
+            if (isNaN(wheelBase) || isNaN(frontOverhang) || isNaN(rearOverhang) || isNaN(vehicleWidth) || isNaN(maxSteeringAngle) || isNaN(vehicleSpeed)) {
+                alert('すべてのフィールドに有効な数値を入力してください。');
+                return;
+            }
+
+            if (geoJsonDataSets.length === 0 || geoJsonDataSets[0].geojson.geometry.coordinates.length < 2) {
+                alert('シミュレーションには最低2点のパスが必要です。');
+                return;
+            }
+
+            // キャンバスのスケールを取得
+            const bounds = getGeoJsonBounds();
+            const metersPerPixelX = bounds.widthMeters / canvas.width;
+            const metersPerPixelY = bounds.heightMeters / canvas.height;
+            const metersPerPixel = Math.max(metersPerPixelX, metersPerPixelY);
+
+            // 既存のシミュレーションがあれば停止
+            if (simulation) {
+                simulation.stop();
+            }
+
+            // パスをメートル単位に変換（latLngToMetersを使用）
+            const pathInMeters = geoJsonDataSets[0].geojson.geometry.coordinates.map(coord => {
+                const point = latLngToMeters(coord[1], coord[0], bounds);
+                return {
+                    x: point.x,
+                    y: point.y
+                };
+            });
+
+            // デバッグ: シミュレーションの初期化を確認
+            console.log("シミュレーション設定:", {
+                wheelBase: wheelBase,
+                frontOverhang: frontOverhang,
+                rearOverhang: rearOverhang,
+                vehicleWidth: vehicleWidth,
+                maxSteeringAngle: maxSteeringAngle,
+                vehicleSpeed: vehicleSpeed
+            });
+            console.log("シミュレーションパス:", pathInMeters);
+
+            // 新しいシミュレーションを作成
+            const config = {
+                wheelBase: wheelBase,
+                frontOverhang: frontOverhang,
+                rearOverhang: rearOverhang,
+                vehicleWidth: vehicleWidth,
+                maxSteeringAngle: maxSteeringAngle,
+                vehicleSpeed: vehicleSpeed
+            };
+            simulation = new TruckSimulation(canvas, config, pathInMeters, metersPerPixel);
+            simulation.start();
+
+            // コントロールボタンを有効化
+            document.getElementById('pauseSimulation').disabled = false;
+            document.getElementById('resetSimulation').disabled = false;
+            document.getElementById('clearPath').disabled = false;
+            document.getElementById('backToMapButton').disabled = false;
+        }
+
+        function pauseTruckSimulation() {
+            if (simulation) {
+                simulation.pause();
+            }
+        }
+
+        function resetTruckSimulation() {
+            if (simulation) {
+                simulation.stop();
+                simulation = null;
+            }
+            drawRoads();
+            document.getElementById('currentSpeed').textContent = '0';
+            document.getElementById('currentSteeringAngle').textContent = '0';
+            document.getElementById('currentTheta').textContent = '0';
+        }
+
+        function clearPath() {
+            // パスのクリア
+            if (simulation) {
+                simulation.stop();
+                simulation = null;
+            }
+            geoJsonDataSets = [];
+            drawRoads();
+            document.getElementById('currentSpeed').textContent = '0';
+            document.getElementById('currentSteeringAngle').textContent = '0';
+            document.getElementById('currentTheta').textContent = '0';
+        }
+
+        function backToMap() {
+            // トラック設定パネルを非表示
+            document.getElementById('truck-controls').style.display = 'none';
+
+            // マップとコントロールパネルを表示
+            document.getElementById('map').style.display = 'block';
+            document.getElementById('map-controls').style.display = 'block';
+
+            // キャンバスを非表示
+            document.getElementById('canvas-container').style.display = 'none';
+
+            // キャンバスをクリア
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 状態をリセット
+            resetSelection();
+            simulation = null;
+
+            // コントロールボタンを無効化
+            document.getElementById('startSimulation').disabled = true;
+            document.getElementById('pauseSimulation').disabled = true;
+            document.getElementById('resetSimulation').disabled = true;
+            document.getElementById('clearPath').disabled = true;
+            document.getElementById('backToMapButton').disabled = true;
+        }
+
+        // 初期化a
+        window.onload = init;
+
+        // TruckSimulationクラスは既に一度だけ定義されています
+    </script>
+</body>
+</html>

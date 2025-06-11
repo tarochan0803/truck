@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>トラック走行シミュレーション</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            display: flex;
+            flex-direction: row;
+        }
+        #controls {
+            width: 300px;
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            margin-right: 20px;
+            box-sizing: border-box;
+        }
+        #controls h2 {
+            margin-top: 0;
+        }
+        #controls label {
+            display: block;
+            margin-bottom: 10px;
+        }
+        #controls input {
+            width: 100%;
+            padding: 5px;
+            margin-top: 5px;
+            box-sizing: border-box;
+        }
+        #controls button {
+            padding: 10px 15px;
+            margin-top: 10px;
+            cursor: pointer;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        #simulation {
+            flex-grow: 1;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            position: relative;
+        }
+        #simulation canvas {
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            cursor: crosshair;
+        }
+        #instructions {
+            margin-top: 20px;
+            font-size: 14px;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <h2>トラック設定</h2>
+        <label>
+            ホイールベース (m):
+            <input type="number" id="wheelBase" value="4.0" step="0.1" min="1">
+        </label>
+        <label>
+            前方オーバーハング (m):
+            <input type="number" id="frontOverhang" value="1.0" step="0.1" min="0">
+        </label>
+        <label>
+            後方オーバーハング (m):
+            <input type="number" id="rearOverhang" value="1.0" step="0.1" min="0">
+        </label>
+        <label>
+            車体幅 (m):
+            <input type="number" id="vehicleWidth" value="2.5" step="0.1" min="1">
+        </label>
+        <label>
+            最大ステアリング角度 (度):
+            <input type="number" id="maxSteeringAngle" value="45" step="1" min="1" max="60">
+        </label>
+        <label>
+            車速 (m/s):
+            <input type="number" id="vehicleSpeed" value="5" step="0.1" min="1">
+        </label>
+        <button id="startSimulation">シミュレーション開始</button>
+        <button id="pauseSimulation">一時停止</button>
+        <button id="resetSimulation">リセット</button>
+        <button id="clearPath">パスをクリア</button>
+        <div id="instructions">
+            <p>キャンバスをクリックしてトラックの移動パスを設定してください。</p>
+            <p>パスをクリアするには「パスをクリア」ボタンを押してください。</p>
+        </div>
+    </div>
+    <div id="simulation">
+        <canvas id="canvas" width="800" height="600"></canvas>
+    </div>
+
+    <script>
+        class TruckSimulation {
+            constructor(canvas, config, path) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.config = config;
+                this.path = path;
+                this.scale = 10; // メートルをピクセルに変換するスケール
+
+                this.reset();
+            }
+
+            reset() {
+                this.currentSegment = 0;
+                this.history = [];
+                this.cornerTrajectories = [[], [], [], []]; // 四隅の軌跡
+                this.running = false;
+
+                // 車両のパラメータを設定
+                this.wheelBase = this.config.wheelBase * this.scale;
+                this.frontOverhang = this.config.frontOverhang * this.scale;
+                this.rearOverhang = this.config.rearOverhang * this.scale;
+                this.vehicleWidth = this.config.vehicleWidth * this.scale;
+                this.maxSteeringAngle = this.degToRad(this.config.maxSteeringAngle);
+                this.velocity = this.config.vehicleSpeed * this.scale; // 車速 (ピクセル/秒)
+
+                // 初期位置と向き
+                this.x = this.path[0].x;
+                this.y = this.path[0].y;
+                if (this.path.length > 1) {
+                    this.theta = Math.atan2(this.path[1].y - this.path[0].y, this.path[1].x - this.path[0].x);
+                } else {
+                    this.theta = 0;
+                }
+
+                this.steeringAngle = 0; // 初期ステアリング角度
+                this.timeStep = 0.1; // 秒単位
+            }
+
+            start() {
+                if (this.path.length < 2) {
+                    alert('シミュレーションには最低2点のパスが必要です。');
+                    return;
+                }
+                this.running = true;
+                this.animate();
+            }
+
+            pause() {
+                this.running = false;
+                if (this.animationFrame) {
+                    cancelAnimationFrame(this.animationFrame);
+                }
+            }
+
+            stop() {
+                this.running = false;
+                if (this.animationFrame) {
+                    cancelAnimationFrame(this.animationFrame);
+                }
+            }
+
+            animate() {
+                if (!this.running) return;
+                this.simulateStep();
+                this.draw();
+                this.animationFrame = requestAnimationFrame(() => this.animate());
+            }
+
+            simulateStep() {
+                if (this.currentSegment >= this.path.length - 1) {
+                    this.stop();
+                    return;
+                }
+
+                const targetPoint = this.path[this.currentSegment + 1];
+
+                // 目標方向の計算
+                const dx = targetPoint.x - this.x;
+                const dy = targetPoint.y - this.y;
+                const distanceToTarget = Math.hypot(dx, dy);
+
+                // 目標点に近づいたら次のセグメントへ
+                if (distanceToTarget < this.velocity * this.timeStep) {
+                    this.currentSegment++;
+                    return;
+                }
+
+                const targetTheta = Math.atan2(dy, dx);
+
+                // 角度差の計算
+                let angleDiff = this.normalizeAngle(targetTheta - this.theta);
+
+                // ステアリング角度を比例制御で更新
+                const kp = 2.0; // 比例ゲイン
+                let steeringAngle = kp * angleDiff;
+
+                // ステアリング角度の制限
+                const maxSteeringAngle = this.maxSteeringAngle;
+                if (steeringAngle > maxSteeringAngle) {
+                    steeringAngle = maxSteeringAngle;
+                } else if (steeringAngle < -maxSteeringAngle) {
+                    steeringAngle = -maxSteeringAngle;
+                }
+
+                this.steeringAngle = steeringAngle;
+
+                // 車体の向きの更新（キネマティックモデル）
+                const angularVelocity = (this.velocity / this.wheelBase) * Math.tan(this.steeringAngle);
+                this.theta += angularVelocity * this.timeStep;
+
+                // 車体の位置の更新
+                this.x += this.velocity * this.timeStep * Math.cos(this.theta);
+                this.y += this.velocity * this.timeStep * Math.sin(this.theta);
+
+                // 車両の状態を更新
+                this.updateVehicleState();
+            }
+
+            updateVehicleState() {
+                const wheelBase = this.wheelBase;
+                const frontOverhang = this.frontOverhang;
+                const rearOverhang = this.rearOverhang;
+                const vehicleWidth = this.vehicleWidth;
+
+                const halfWidth = vehicleWidth / 2;
+
+                // 車両の全長
+                const totalLength = frontOverhang + wheelBase + rearOverhang;
+
+                // 車両の前方オーバーハングの中点を基準とする
+                const referencePoint = {
+                    x: this.x,
+                    y: this.y,
+                    theta: this.theta
+                };
+
+                // 車両の四隅の相対位置
+                const corners = [
+                    { x: 0, y: halfWidth },   // corner1: 前左
+                    { x: 0, y: -halfWidth },  // corner2: 前右
+                    { x: -totalLength, y: -halfWidth }, // corner3: 後右
+                    { x: -totalLength, y: halfWidth }   // corner4: 後左
+                ];
+
+                // 各コーナーの絶対位置を計算し、軌跡を保存
+                for (let i = 0; i < corners.length; i++) {
+                    const localX = corners[i].x;
+                    const localY = corners[i].y;
+                    const rotatedX = localX * Math.cos(referencePoint.theta) - localY * Math.sin(referencePoint.theta);
+                    const rotatedY = localX * Math.sin(referencePoint.theta) + localY * Math.cos(referencePoint.theta);
+                    const worldX = referencePoint.x + rotatedX;
+                    const worldY = referencePoint.y + rotatedY;
+
+                    this.cornerTrajectories[i].push({ x: worldX, y: worldY });
+                }
+
+                // 現在の状態を履歴に追加
+                this.history.push({
+                    x: this.x,
+                    y: this.y,
+                    theta: this.theta
+                });
+            }
+
+            draw() {
+                // クリア
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+                // パスの描画
+                this.drawPath();
+
+                // 各コーナーの軌跡を描画
+                this.drawCornerTrajectories();
+
+                // 現在の状態の描画
+                this.drawCurrentState();
+            }
+
+            drawPath() {
+                if (this.path.length < 2) return;
+                this.ctx.strokeStyle = 'lightgray';
+                this.ctx.lineWidth = 2;
+                this.ctx.beginPath();
+                this.ctx.moveTo(this.path[0].x, this.path[0].y);
+                for (let i = 1; i < this.path.length; i++) {
+                    this.ctx.lineTo(this.path[i].x, this.path[i].y);
+                }
+                this.ctx.stroke();
+
+                // パス上の点を描画
+                for (let point of this.path) {
+                    this.ctx.fillStyle = 'blue';
+                    this.ctx.beginPath();
+                    this.ctx.arc(point.x, point.y, 3, 0, 2 * Math.PI);
+                    this.ctx.fill();
+                }
+            }
+
+            drawCornerTrajectories() {
+                const colors = ['red', 'green', 'blue', 'orange'];
+                for (let i = 0; i < this.cornerTrajectories.length; i++) {
+                    const trajectory = this.cornerTrajectories[i];
+                    if (trajectory.length < 2) continue;
+                    this.ctx.strokeStyle = colors[i];
+                    this.ctx.lineWidth = 1;
+                    this.ctx.beginPath();
+                    this.ctx.moveTo(trajectory[0].x, trajectory[0].y);
+                    for (let j = 1; j < trajectory.length; j++) {
+                        this.ctx.lineTo(trajectory[j].x, trajectory[j].y);
+                    }
+                    this.ctx.stroke();
+                }
+            }
+
+            drawCurrentState() {
+                const record = this.history[this.history.length - 1];
+                if (!record) return;
+
+                // トラックを描画
+                this.drawTruck(record);
+            }
+
+            drawTruck(record) {
+                if (!record) return;
+
+                const wheelBase = this.wheelBase;
+                const frontOverhang = this.frontOverhang;
+                const rearOverhang = this.rearOverhang;
+                const vehicleWidth = this.vehicleWidth;
+
+                const halfWidth = vehicleWidth / 2;
+
+                // 車両の全長
+                const totalLength = frontOverhang + wheelBase + rearOverhang;
+
+                // 車両の前方オーバーハングの中点を基準とする
+                const referencePoint = {
+                    x: record.x,
+                    y: record.y,
+                    theta: record.theta
+                };
+
+                // 車両の四隅の相対位置
+                const corners = [
+                    { x: 0, y: halfWidth },   // corner1: 前左
+                    { x: 0, y: -halfWidth },  // corner2: 前右
+                    { x: -totalLength, y: -halfWidth }, // corner3: 後右
+                    { x: -totalLength, y: halfWidth }   // corner4: 後左
+                ];
+
+                // 各コーナーの絶対位置を計算
+                const transformedCorners = [];
+                for (let i = 0; i < corners.length; i++) {
+                    const localX = corners[i].x;
+                    const localY = corners[i].y;
+                    const rotatedX = localX * Math.cos(referencePoint.theta) - localY * Math.sin(referencePoint.theta);
+                    const rotatedY = localX * Math.sin(referencePoint.theta) + localY * Math.cos(referencePoint.theta);
+                    const worldX = referencePoint.x + rotatedX;
+                    const worldY = referencePoint.y + rotatedY;
+                    transformedCorners.push({ x: worldX, y: worldY });
+                }
+
+                // トラックの四角形を描画
+                this.ctx.strokeStyle = 'black';
+                this.ctx.lineWidth = 3;
+                this.ctx.beginPath();
+                this.ctx.moveTo(transformedCorners[0].x, transformedCorners[0].y);
+                for (let i = 1; i < transformedCorners.length; i++) {
+                    this.ctx.lineTo(transformedCorners[i].x, transformedCorners[i].y);
+                }
+                this.ctx.closePath();
+                this.ctx.stroke();
+            }
+
+            degToRad(degrees) {
+                return degrees * Math.PI / 180;
+            }
+
+            radToDeg(radians) {
+                return radians * 180 / Math.PI;
+            }
+
+            normalizeAngle(angle) {
+                while (angle > Math.PI) angle -= 2 * Math.PI;
+                while (angle < -Math.PI) angle += 2 * Math.PI;
+                return angle;
+            }
+        }
+
+        // 初期設定とイベントリスナー
+        document.addEventListener('DOMContentLoaded', () => {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            let simulation = null;
+            let path = [];
+
+            // キャンバス上のクリックでパスの点を追加
+            canvas.addEventListener('click', (event) => {
+                const rect = canvas.getBoundingClientRect();
+                const x = event.clientX - rect.left;
+                const y = event.clientY - rect.top;
+                path.push({ x: x, y: y });
+                if (simulation) {
+                    simulation.draw();
+                } else {
+                    // パスの点を描画
+                    ctx.fillStyle = 'blue';
+                    ctx.beginPath();
+                    ctx.arc(x, y, 3, 0, 2 * Math.PI);
+                    ctx.fill();
+
+                    // パスを線で描画
+                    if (path.length > 1) {
+                        ctx.strokeStyle = 'lightgray';
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        ctx.moveTo(path[path.length - 2].x, path[path.length - 2].y);
+                        ctx.lineTo(path[path.length - 1].x, path[path.length - 1].y);
+                        ctx.stroke();
+                    }
+                }
+            });
+
+            // シミュレーション開始ボタン
+            document.getElementById('startSimulation').addEventListener('click', () => {
+                // ユーザー入力を取得
+                const wheelBase = parseFloat(document.getElementById('wheelBase').value);
+                const frontOverhang = parseFloat(document.getElementById('frontOverhang').value);
+                const rearOverhang = parseFloat(document.getElementById('rearOverhang').value);
+                const vehicleWidth = parseFloat(document.getElementById('vehicleWidth').value);
+                const maxSteeringAngle = parseFloat(document.getElementById('maxSteeringAngle').value);
+                const vehicleSpeed = parseFloat(document.getElementById('vehicleSpeed').value);
+
+                if (isNaN(wheelBase) || isNaN(frontOverhang) || isNaN(rearOverhang) || isNaN(vehicleWidth) || isNaN(maxSteeringAngle) || isNaN(vehicleSpeed)) {
+                    alert('すべてのフィールドに有効な数値を入力してください。');
+                    return;
+                }
+
+                if (path.length < 2) {
+                    alert('シミュレーションには最低2点のパスが必要です。');
+                    return;
+                }
+
+                // 既存のシミュレーションがあれば停止
+                if (simulation) {
+                    simulation.stop();
+                }
+
+                // 新しいシミュレーションを作成
+                const config = {
+                    wheelBase: wheelBase,
+                    frontOverhang: frontOverhang,
+                    rearOverhang: rearOverhang,
+                    vehicleWidth: vehicleWidth,
+                    maxSteeringAngle: maxSteeringAngle,
+                    vehicleSpeed: vehicleSpeed
+                };
+                simulation = new TruckSimulation(canvas, config, path);
+                simulation.start();
+            });
+
+            // 一時停止ボタン
+            document.getElementById('pauseSimulation').addEventListener('click', () => {
+                if (simulation) {
+                    simulation.pause();
+                }
+            });
+
+            // リセットボタン
+            document.getElementById('resetSimulation').addEventListener('click', () => {
+                if (simulation) {
+                    simulation.stop();
+                    simulation = null;
+                }
+                path = [];
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            });
+
+            // パスをクリアボタン
+            document.getElementById('clearPath').addEventListener('click', () => {
+                path = [];
+                if (simulation) {
+                    simulation.stop();
+                    simulation = null;
+                }
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>トラック搬入シミュレーション</title>
+    <!-- Leaflet.jsのCSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <!-- osmtogeojsonの読み込み（CDN） -->
+    <script src="https://cdn.jsdelivr.net/gh/tyrasd/osmtogeojson@master/osmtogeojson.js"></script>
+
+    <style>
+        /* マップのスタイル */
+        #map {
+            width: 100%;
+            height: 100vh;
+        }
+
+        /* コントロールパネルのスタイル */
+        #control-panel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 1000;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            max-height: 90vh;
+            overflow: auto;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        #control-panel input {
+            width: 180px;
+            padding: 5px;
+            margin-bottom: 10px;
+        }
+
+        #control-panel button {
+            padding: 5px 10px;
+            margin-bottom: 10px;
+            cursor: pointer;
+        }
+
+        /* 選択された道路のスタイル */
+        .selected-road {
+            color: orange !important;
+        }
+
+        /* 選択された道路リストのスタイル */
+        #selected-roads {
+            margin-top: 15px;
+        }
+
+        #selected-roads-list {
+            list-style: none;
+            padding: 0;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        #selected-roads-list li {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 5px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        #selected-roads-list li:last-child {
+            border-bottom: none;
+        }
+
+        .road-name {
+            flex-grow: 1;
+        }
+
+        .road-actions button {
+            margin-left: 5px;
+            padding: 2px 5px;
+            cursor: pointer;
+        }
+
+        /* 道幅編集フォームのスタイル */
+        .edit-width-form {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+        }
+
+        .edit-width-form input {
+            width: 60px;
+            margin-right: 5px;
+        }
+    </style>
+
+    <!-- Leaflet.jsのJavaScript -->
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <!-- Turf.js（地図上の計算に使用） -->
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+</head>
+<body>
+    <div id="control-panel">
+        <input type="text" id="search-input" placeholder="目的地を検索">
+        <button id="search-button">検索</button><br>
+        <button id="refresh-data">データを更新</button><br>
+
+        <button id="start-route-selection">経路選択モード開始</button>
+        <button id="confirm-route" disabled>経路決定</button><br>
+
+        <!-- 追加：GeoJSONダウンロードボタン -->
+        <button id="download-geojson">GeoJSONをダウンロード</button>
+
+        <!-- 選択された道路のリスト表示 -->
+        <div id="selected-roads">
+            <h3>選択された道路:</h3>
+            <ul id="selected-roads-list"></ul>
+        </div>
+    </div>
+    <div id="map"></div>
+
+    <script>
+    // グローバル変数
+    var map;
+    var roadData = null;       // Overpass APIから取得した生データ
+    var geoJsonData = null;    // osmtogeojson で変換したGeoJSONデータ
+    var roadLayers = [];
+    var selectedRoads = [];    // 選択された道路のリスト
+    var isSelectingRoute = false;
+
+    // 初期化関数
+    function init() {
+        // メインマップの初期化
+        map = L.map('map').setView([35.681236, 139.767125], 16);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        // 道路データの取得
+        fetchRoadData();
+
+        // イベントリスナーの設定
+        document.getElementById('search-button').addEventListener('click', searchLocation);
+        document.getElementById('refresh-data').addEventListener('click', fetchRoadData);
+        document.getElementById('start-route-selection').addEventListener('click', startRouteSelection);
+        document.getElementById('confirm-route').addEventListener('click', confirmRoute);
+
+        // 追加：GeoJSONダウンロードボタン
+        document.getElementById('download-geojson').addEventListener('click', downloadGeoJsonFile);
+    }
+
+    // 道路データの取得
+    function fetchRoadData() {
+        var bounds = map.getBounds();
+        var overpassUrl = 'https://overpass-api.de/api/interpreter';
+        var query = `
+            [out:json];
+            (
+                way
+                ["highway"]
+                (${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});
+            );
+            out tags geom;
+        `;
+
+        // 既存の道路レイヤーを削除
+        roadLayers.forEach(function(layer) {
+            map.removeLayer(layer);
+        });
+        roadLayers = [];
+        selectedRoads = [];
+        isSelectingRoute = false;
+        document.getElementById('confirm-route').disabled = true;
+        updateSelectedRoadsList();
+
+        // データ取得
+        fetch(overpassUrl, {
+            method: 'POST',
+            body: query
+        })
+        .then(response => response.json())
+        .then(data => {
+            // Overpassからの生データを保持
+            roadData = data;
+
+            // Overpass形式からGeoJSONへ変換
+            geoJsonData = osmtogeojson(data);
+
+            // 地図上に道路を描画
+            data.elements.forEach(function(element) {
+                if (element.type === 'way' && element.geometry) {
+                    var coords = element.geometry.map(function(coord) {
+                        return [coord.lat, coord.lon];
+                    });
+
+                    var polyline = L.polyline(coords, {
+                        color: 'blue',
+                        weight: 5
+                    }).addTo(map);
+
+                    // 道路情報を保存
+                    polyline.element = element;
+                    polyline.originalStyle = { color: 'blue', weight: 5 };
+
+                    // 経路選択用のクリックイベント
+                    polyline.on('click', function() {
+                        if (isSelectingRoute) {
+                            toggleRoadSelection(polyline);
+                        }
+                    });
+
+                    roadLayers.push(polyline);
+                }
+            });
+        })
+        .catch(err => console.error(err));
+    }
+
+    // GeoJSON ファイルをダウンロードさせる
+    function downloadGeoJsonFile() {
+        if (!geoJsonData) {
+            alert('GeoJSONデータがありません。地図の読み込み後にお試しください。');
+            return;
+        }
+
+        // GeoJSONを文字列化
+        var geoJsonStr = JSON.stringify(geoJsonData, null, 2);
+
+        // Blob作成（MIMEタイプはお好みで）
+        var blob = new Blob([geoJsonStr], { type: "application/geo+json" });
+        var url = URL.createObjectURL(blob);
+
+        // ダウンロード用のリンクを生成
+        var link = document.createElement('a');
+        link.href = url;
+        link.download = 'road_data.geojson';  // 任意のファイル名に変更可
+        document.body.appendChild(link);
+
+        // リンクを自動クリックしてダウンロード
+        link.click();
+
+        // 後始末
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }
+
+    // 道路の選択/解除をトグル
+    function toggleRoadSelection(polyline) {
+        var index = selectedRoads.indexOf(polyline);
+        if (index === -1) {
+            // 道路を選択
+            selectedRoads.push(polyline);
+            polyline.setStyle({ color: 'orange' });
+        } else {
+            // 道路の選択を解除
+            selectedRoads.splice(index, 1);
+            polyline.setStyle(polyline.originalStyle);
+        }
+        updateSelectedRoadsList();
+
+        // 「経路決定」ボタンの有効化/無効化
+        document.getElementById('confirm-route').disabled = selectedRoads.length === 0;
+    }
+
+    // 選択された道路のリストを更新
+    function updateSelectedRoadsList() {
+        var list = document.getElementById('selected-roads-list');
+        list.innerHTML = '';
+
+        selectedRoads.forEach(function(polyline, idx) {
+            var li = document.createElement('li');
+
+            var nameSpan = document.createElement('span');
+            nameSpan.className = 'road-name';
+            nameSpan.textContent = polyline.element.tags.name || `道路 ${idx + 1}`;
+            li.appendChild(nameSpan);
+
+            var actionsDiv = document.createElement('div');
+            actionsDiv.className = 'road-actions';
+
+            // 上ボタン
+            var upButton = document.createElement('button');
+            upButton.textContent = '↑';
+            upButton.title = '順序を上に移動';
+            upButton.onclick = function() { moveRoadUp(idx); };
+            actionsDiv.appendChild(upButton);
+
+            // 下ボタン
+            var downButton = document.createElement('button');
+            downButton.textContent = '↓';
+            downButton.title = '順序を下に移動';
+            downButton.onclick = function() { moveRoadDown(idx); };
+            actionsDiv.appendChild(downButton);
+
+            // 選択解除ボタン
+            var removeButton = document.createElement('button');
+            removeButton.textContent = '×';
+            removeButton.title = '選択解除';
+            removeButton.onclick = function() { toggleRoadSelection(polyline); };
+            actionsDiv.appendChild(removeButton);
+
+            li.appendChild(actionsDiv);
+
+            // 道幅編集フォーム
+            var editForm = document.createElement('div');
+            editForm.className = 'edit-width-form';
+
+            var widthInput = document.createElement('input');
+            widthInput.type = 'number';
+            widthInput.min = '1';
+            widthInput.step = '0.1';
+            widthInput.value = getRoadWidth(polyline);
+            widthInput.placeholder = '道幅 (m)';
+            editForm.appendChild(widthInput);
+
+            var saveButton = document.createElement('button');
+            saveButton.textContent = '保存';
+            saveButton.onclick = function() { updateRoadWidth(polyline, widthInput.value); };
+            editForm.appendChild(saveButton);
+
+            li.appendChild(editForm);
+
+            list.appendChild(li);
+        });
+    }
+
+    // 道路の順序を上に移動
+    function moveRoadUp(index) {
+        if (index === 0) return;
+        var temp = selectedRoads[index - 1];
+        selectedRoads[index - 1] = selectedRoads[index];
+        selectedRoads[index] = temp;
+        updateSelectedRoadsList();
+    }
+
+    // 道路の順序を下に移動
+    function moveRoadDown(index) {
+        if (index === selectedRoads.length - 1) return;
+        var temp = selectedRoads[index + 1];
+        selectedRoads[index + 1] = selectedRoads[index];
+        selectedRoads[index] = temp;
+        updateSelectedRoadsList();
+    }
+
+    // 道幅を取得または推定
+    function getRoadWidth(polyline) {
+        if (polyline.element.tags && polyline.element.tags.width) {
+            var widthStr = polyline.element.tags.width;
+            var width = parseFloat(widthStr);
+            if (!isNaN(width)) {
+                return width;
+            }
+        }
+        // 幅がない場合は、highwayの種類から推定
+        var highwayType = polyline.element.tags && polyline.element.tags.highway ? polyline.element.tags.highway : 'unknown';
+        var widthEstimate = {
+            'motorway': 25,
+            'trunk': 20,
+            'primary': 15,
+            'secondary': 12,
+            'tertiary': 10,
+            'unclassified': 8,
+            'residential': 6,
+            'service': 4,
+            'footway': 2,
+            'path': 1,
+            'unknown': 5
+        };
+        return widthEstimate[highwayType] || 5;
+    }
+
+    // 道幅を更新
+    function updateRoadWidth(polyline, newWidth) {
+        var width = parseFloat(newWidth);
+        if (isNaN(width) || width <= 0) {
+            alert('有効な道幅を入力してください。');
+            return;
+        }
+
+        // 更新した道幅をスタイルに反映
+        polyline.setStyle({ weight: width });
+
+        // ここではOSMデータを直接編集するわけではありません。
+
+        alert(`道路の道幅を ${width}m に更新しました。`);
+    }
+
+    // 目的地の検索
+    function searchLocation() {
+        var query = document.getElementById('search-input').value;
+        if (query) {
+            fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data && data.length > 0) {
+                    var result = data[0];
+                    var lat = parseFloat(result.lat);
+                    var lon = parseFloat(result.lon);
+                    map.setView([lat, lon], 16);
+                    L.marker([lat, lon]).addTo(map).bindPopup(result.display_name).openPopup();
+                } else {
+                    alert('場所が見つかりませんでした。');
+                }
+            })
+            .catch(err => console.error(err));
+        }
+    }
+
+    // 経路選択モードの開始
+    function startRouteSelection() {
+        isSelectingRoute = true;
+        alert('経路として進みたい道路をクリックしてください。選択を終了するには「経路決定」ボタンを押してください。');
+        document.getElementById('confirm-route').disabled = selectedRoads.length === 0;
+    }
+
+    // 経路決定
+    function confirmRoute() {
+        if (selectedRoads.length === 0) {
+            alert('経路が選択されていません。');
+            return;
+        }
+
+        // 道路の連結性を確認
+        if (!checkConnectivity()) {
+            alert('選択された道路が連結していません。連続する道路を選択してください。');
+            return;
+        }
+
+        // 選択された道路の情報を表示または処理
+        var roadNames = selectedRoads.map(function(polyline, idx) {
+            return polyline.element.tags.name || `道路 ${idx + 1}`;
+        });
+
+        alert('選択された道路:\n' + roadNames.join(' → '));
+
+        // 必要に応じて経路確定後の処理を追加
+
+        // 選択状態をリセット
+        resetSelection();
+    }
+
+    // 道路の連結性を確認
+    function checkConnectivity() {
+        for (var i = 0; i < selectedRoads.length - 1; i++) {
+            var currentRoad = selectedRoads[i];
+            var nextRoad = selectedRoads[i + 1];
+
+            var currentEnd = currentRoad.getLatLngs().slice(-1)[0];
+            var nextStart = nextRoad.getLatLngs()[0];
+
+            // 2点間の距離を計算
+            var distance = map.distance(currentEnd, nextStart);
+
+            // 近ければ連結しているとみなす（閾値を10mなど任意に設定）
+            if (distance > 10) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // 選択状態をリセット
+    function resetSelection() {
+        // 選択された道路のスタイルを元に戻す
+        selectedRoads.forEach(function(polyline) {
+            polyline.setStyle(polyline.originalStyle);
+        });
+
+        // 道路リストをクリア
+        selectedRoads = [];
+        updateSelectedRoadsList();
+
+        // 「経路決定」ボタンを無効化
+        document.getElementById('confirm-route').disabled = true;
+
+        // モードを終了
+        isSelectingRoute = false;
+    }
+
+    // ページ読み込み時に初期化
+    window.onload = init;
+    </script>
+</body>
+</html>
